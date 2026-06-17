@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Descarga tu guía gratuita</title>
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,700;0,900;1,700&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --olive-dark: #3D4A1F;
+    --gold:       #C9A84C;
+    --gold-light: #E8D49A;
+    --cream:      #F5F3EE;
+    --white:      #FAFAF6;
+  }
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { font-family: "DM Sans", sans-serif; background: var(--cream); }
+
+  /* ── DESKTOP ── */
+  .page {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    min-height: 100vh;
+    max-width: 960px;
+    margin: 0 auto;
+    box-shadow: 0 0 60px rgba(0,0,0,0.08);
+  }
+  .left {
+    background: var(--olive-dark);
+    padding: 48px 44px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+  }
+  .right {
+    background: var(--white);
+    display: flex;
+    flex-direction: column;
+  }
+  .right iframe { flex: 1; width: 100%; min-height: 520px; border: none; display: block; }
+
+  .left-tag { font-size: 10px; letter-spacing: .16em; text-transform: uppercase; color: var(--gold-light); font-weight: 600; display: flex; align-items: center; gap: 8px; margin-bottom: 28px; }
+  .left-tag::before { content: ""; width: 18px; height: 1px; background: var(--gold-light); display: block; }
+  .left h1 { font-family: "Playfair Display", serif; font-size: 32px; font-weight: 900; line-height: 1.2; color: var(--white); margin-bottom: 16px; }
+  .left h1 em { color: var(--gold); font-style: italic; }
+  .gold-line { width: 40px; height: 2px; background: var(--gold); margin-bottom: 16px; }
+  .left-desc { font-size: 13px; line-height: 1.7; color: rgba(255,255,255,.65); margin-bottom: 28px; }
+  .inside-block { display: block; }
+  .inside-title { font-size: 9px; letter-spacing: .14em; text-transform: uppercase; color: var(--gold-light); font-weight: 600; margin-bottom: 12px; }
+  .inside-list { list-style: none; display: flex; flex-direction: column; gap: 8px; }
+  .inside-item { display: flex; align-items: flex-start; gap: 10px; font-size: 12px; color: rgba(255,255,255,.8); line-height: 1.45; }
+  .inside-item::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--gold); margin-top: 4px; flex-shrink: 0; }
+  .author { margin-top: auto; padding-top: 28px; border-top: 1px solid rgba(255,255,255,.12); text-align: center; }
+  .author-name { font-family: "Playfair Display", serif; font-size: 14px; font-weight: 700; color: var(--white); }
+  .author-role { font-size: 9px; color: rgba(255,255,255,.4); margin-top: 3px; letter-spacing: .05em; text-transform: uppercase; }
+
+  /* ── MÓVIL ── */
+  @media (max-width: 768px) {
+    .page {
+      display: flex;
+      flex-direction: column;
+      min-height: 100vh;
+      max-width: 100%;
+      box-shadow: none;
+    }
+
+    /* Panel verde arriba — solo título y entradilla */
+    .left {
+      padding: 28px 20px 24px;
+      justify-content: flex-start;
+      order: 1;
+    }
+    .left-tag { margin-bottom: 16px; }
+    .left h1 { font-size: 24px; margin-bottom: 10px; }
+    .gold-line { margin-bottom: 10px; }
+    .left-desc { margin-bottom: 0; }
+
+    /* Ocultar todo menos título en móvil */
+    .inside-block { display: none; }
+    .author { display: none; }
+    .gold-line { display: none; }
+    .left-desc { display: none; }
+
+    /* Formulario debajo */
+    .right { order: 2; flex: 1; }
+    .right iframe { min-height: 320px; height: 320px; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <div class="left">
+    <div class="left-tag">Guía gratuita · Finanzas personales</div>
+    <h1>El sistema para<br>dejar de <em>improvisar</em><br>con tu dinero</h1>
+    <div class="gold-line"></div>
+    <p class="left-desc">Una guía práctica para personas normales que quieren ordenar su dinero sin complicarse. Sin jerga técnica, sin teoría vacía.</p>
+    <div class="inside-block">
+      <p class="inside-title" style="margin-top:28px;">Lo que encontrarás dentro</p>
+      <ul class="inside-list">
+        <li class="inside-item">Por qué la inflación erosiona tu ahorro cada mes</li>
+        <li class="inside-item">Cómo funciona el interés compuesto y por qué el tiempo lo es todo</li>
+        <li class="inside-item">El sistema de 4 bloques para ordenar tus finanzas</li>
+        <li class="inside-item">Dos casos reales: qué hicieron bien y qué consecuencias evitaron</li>
+      </ul>
+    </div>
+    <div class="author">
+      <div class="author-name">Jorge Hernán-Gómez Rodríguez</div>
+      <div class="author-role">Consultor Financiero</div>
+    </div>
+  </div>
+
+  <div class="right">
+    <iframe
+      src="https://e116cab0.sibforms.com/serve/MUIFAE75jjpkKf7PjVFYr6AbB7Xl9sVcQbR6g7hBJceDwMr78IvvLCt021jorG0Fm4wUQGB2BV1x8pxN5nA_Ph5zPIVeD5Sqovd_9AyRrZpAr5Z_jebKVMaMQ4lCD3zcVwHHRt7CeKr-1--6RHIDh_UIHItVrAhVatz7-jNmMiy6LrRnErxZmqerVc6rrre02XOkB55l4G6b2llWYQ=="
+      frameborder="0" scrolling="auto" allowfullscreen
+      title="Formulario de suscripción">
+    </iframe>
+  </div>
+
+</div>
+</body>
+</html>
