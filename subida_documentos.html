@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Envío de documentación · Jorge Hernán-Gómez Rodríguez</title>
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,700;0,900;1,700&family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --olive:#3D4A1F; --olive-mid:#6B7A3E; --olive-pale:#E8EDDA;
+    --gold:#C9A84C; --gold-lt:#E8D49A; --gold-dark:#8B6E28; --gold-pale:#FAF3DC;
+    --cream:#F5F3EE; --cream-dk:#EAE7DE; --white:#FAFAF6;
+    --ink:#1A1A14; --ink-mid:#3A3A2E; --ink-lt:#6A6A5A;
+    --red:#C0392B; --green:#27AE60;
+  }
+  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
+  html,body{font-family:'DM Sans',sans-serif;background:var(--cream);color:var(--ink-mid);line-height:1.55;-webkit-font-smoothing:antialiased;}
+  body{padding:24px 16px;min-height:100vh;}
+
+  .card{max-width:600px;margin:0 auto;background:var(--white);border-radius:18px;overflow:hidden;box-shadow:0 6px 50px rgba(61,74,31,.10);}
+
+  /* Header */
+  .head{background:var(--olive);padding:36px 40px 32px;text-align:center;position:relative;}
+  .head__tag{font-size:10px;font-weight:600;letter-spacing:.16em;text-transform:uppercase;color:var(--gold-lt);opacity:.85;margin-bottom:16px;}
+  .head__title{font-family:'Playfair Display',serif;font-size:26px;font-weight:900;line-height:1.2;color:var(--white);margin-bottom:10px;}
+  .head__title em{color:var(--gold);font-style:italic;}
+  .head__sub{font-size:13px;line-height:1.65;color:rgba(255,255,255,.72);max-width:420px;margin:0 auto;}
+
+  /* Body */
+  .body{padding:32px 40px 36px;}
+  .field{margin-bottom:22px;}
+  .field__label{display:block;font-size:13px;font-weight:700;color:var(--olive);margin-bottom:3px;}
+  .field__hint{font-size:11.5px;color:var(--ink-lt);margin-bottom:9px;line-height:1.5;}
+  .field__req{color:var(--gold-dark);font-weight:700;}
+
+  input[type=text],input[type=email]{width:100%;font-family:inherit;font-size:14px;color:var(--ink);
+    background:var(--cream);border:1.5px solid var(--cream-dk);border-radius:10px;padding:13px 15px;transition:border-color .15s,background .15s;}
+  input[type=text]:focus,input[type=email]:focus{outline:none;border-color:var(--gold);background:var(--white);}
+  input::placeholder{color:#A8A89A;}
+
+  /* File drop zones */
+  .drop{position:relative;border:1.5px dashed var(--olive-mid);border-radius:12px;background:var(--olive-pale);
+    padding:18px 16px;text-align:center;cursor:pointer;transition:border-color .15s,background .15s;}
+  .drop:hover{border-color:var(--gold);background:var(--gold-pale);}
+  .drop.has-file{border-style:solid;border-color:var(--green);background:#EDF7F1;}
+  .drop.error{border-color:var(--red);background:#FDF0EE;}
+  .drop input[type=file]{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%;}
+  .drop__icon{font-size:22px;margin-bottom:6px;line-height:1;}
+  .drop__text{font-size:12.5px;font-weight:600;color:var(--olive);}
+  .drop__meta{font-size:11px;color:var(--ink-lt);margin-top:3px;}
+  .drop__files{margin-top:10px;display:flex;flex-direction:column;gap:6px;text-align:left;}
+  .chip{display:flex;align-items:center;gap:8px;background:var(--white);border:1px solid var(--cream-dk);border-radius:8px;
+    padding:8px 11px;font-size:11.5px;color:var(--ink-mid);}
+  .chip__check{color:var(--green);font-weight:700;flex-shrink:0;}
+  .chip__name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;}
+  .chip__size{color:var(--ink-lt);flex-shrink:0;font-size:10.5px;}
+
+  .divider{height:1px;background:var(--cream-dk);margin:28px 0 24px;}
+  .section-label{font-size:10px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-lt);margin-bottom:16px;}
+
+  /* Submit */
+  .submit{width:100%;font-family:inherit;font-size:15px;font-weight:700;letter-spacing:.02em;color:var(--olive);
+    background:var(--gold);border:none;border-radius:10px;padding:16px;cursor:pointer;transition:background .15s,transform .1s;margin-top:6px;}
+  .submit:hover{background:var(--gold-lt);}
+  .submit:active{transform:translateY(1px);}
+  .submit:disabled{background:var(--cream-dk);color:var(--ink-lt);cursor:not-allowed;}
+
+  .privacy{display:flex;gap:9px;align-items:flex-start;margin-top:18px;font-size:11px;color:var(--ink-lt);line-height:1.6;}
+  .privacy__lock{flex-shrink:0;margin-top:1px;}
+
+  .err-msg{color:var(--red);font-size:11.5px;font-weight:600;margin-top:6px;display:none;}
+  .err-msg.show{display:block;}
+
+  /* Overlay states */
+  .overlay{position:fixed;inset:0;background:rgba(245,243,238,.96);display:none;align-items:center;justify-content:center;padding:24px;z-index:50;}
+  .overlay.show{display:flex;}
+  .overlay__box{max-width:400px;text-align:center;}
+  .spinner{width:44px;height:44px;border:4px solid var(--cream-dk);border-top-color:var(--gold);border-radius:50%;margin:0 auto 20px;animation:spin .8s linear infinite;}
+  @keyframes spin{to{transform:rotate(360deg);}}
+  .overlay__title{font-family:'Playfair Display',serif;font-size:22px;font-weight:700;color:var(--olive);margin-bottom:8px;}
+  .overlay__text{font-size:13.5px;color:var(--ink-mid);line-height:1.65;}
+  .ok-check{width:56px;height:56px;background:var(--green);border-radius:50%;margin:0 auto 20px;display:flex;align-items:center;justify-content:center;color:#fff;font-size:30px;}
+  .fail-x{width:56px;height:56px;background:var(--red);border-radius:50%;margin:0 auto 20px;display:flex;align-items:center;justify-content:center;color:#fff;font-size:28px;}
+  .retry{margin-top:18px;font-family:inherit;font-size:13px;font-weight:700;color:var(--olive);background:var(--gold);border:none;border-radius:8px;padding:11px 26px;cursor:pointer;}
+
+  .foot{text-align:center;padding:20px;font-size:11px;color:var(--ink-lt);}
+  .foot__name{font-family:'Playfair Display',serif;font-weight:700;color:var(--olive);font-size:13px;}
+
+  @media(max-width:600px){
+    .head{padding:30px 24px 26px;}
+    .body{padding:26px 22px 30px;}
+    .head__title{font-size:22px;}
+  }
+</style>
+</head>
+<body>
+
+<div class="card">
+  <div class="head">
+    <div class="head__tag">Documentación · Trámite seguro</div>
+    <h1 class="head__title">Envía tu <em>documentación</em></h1>
+    <p class="head__sub">Para continuar con tu proceso necesito tres documentos. Súbelos aquí y llegarán directamente a tu expediente. Fotos o PDF, lo que te resulte más cómodo.</p>
+  </div>
+
+  <div class="body">
+    <form id="form" novalidate>
+
+      <div class="section-label">Tus datos</div>
+
+      <div class="field">
+        <label class="field__label" for="nombre">Nombre y apellidos <span class="field__req">·</span></label>
+        <p class="field__hint">Escríbelos completos y tal y como te los he indicado, para localizar tu expediente.</p>
+        <input type="text" id="nombre" name="nombre" placeholder="Nombre y dos apellidos" autocomplete="name">
+        <div class="err-msg" id="err-nombre">Escribe tu nombre y apellidos completos.</div>
+      </div>
+
+      <div class="field">
+        <label class="field__label" for="email">Correo electrónico <span class="field__req">·</span></label>
+        <p class="field__hint">Por si necesito contactarte sobre la documentación.</p>
+        <input type="email" id="email" name="email" placeholder="tucorreo@ejemplo.com" autocomplete="email">
+        <div class="err-msg" id="err-email">Escribe un correo válido.</div>
+      </div>
+
+      <div class="divider"></div>
+      <div class="section-label">Documentos</div>
+
+      <!-- DNI -->
+      <div class="field">
+        <label class="field__label">DNI <span class="field__req">·</span></label>
+        <p class="field__hint">Anverso y reverso. Puedes subir <strong>una o dos imágenes</strong>, o un único PDF con las dos caras.</p>
+        <div class="drop" id="drop-dni">
+          <input type="file" id="dni" accept="image/*,application/pdf" multiple capture="environment">
+          <div class="drop__icon">🪪</div>
+          <div class="drop__text">Toca para adjuntar tu DNI</div>
+          <div class="drop__meta">1 o 2 archivos · foto o PDF</div>
+          <div class="drop__files" id="files-dni"></div>
+        </div>
+        <div class="err-msg" id="err-dni">Adjunta al menos una imagen o PDF de tu DNI.</div>
+      </div>
+
+      <!-- Certificado bancario -->
+      <div class="field">
+        <label class="field__label">Certificado de titularidad bancaria <span class="field__req">·</span></label>
+        <p class="field__hint">El documento del banco donde figura tu cuenta a tu nombre.</p>
+        <div class="drop" id="drop-cert">
+          <input type="file" id="cert" accept="image/*,application/pdf" capture="environment">
+          <div class="drop__icon">🏦</div>
+          <div class="drop__text">Toca para adjuntar el certificado</div>
+          <div class="drop__meta">1 archivo · foto o PDF</div>
+          <div class="drop__files" id="files-cert"></div>
+        </div>
+        <div class="err-msg" id="err-cert">Adjunta el certificado de tu cuenta bancaria.</div>
+      </div>
+
+      <!-- Prueba de residencia -->
+      <div class="field">
+        <label class="field__label">Prueba de residencia <span class="field__req">·</span></label>
+        <p class="field__hint">Una factura reciente (luz, agua, internet…) o certificado de empadronamiento con tu dirección.</p>
+        <div class="drop" id="drop-res">
+          <input type="file" id="res" accept="image/*,application/pdf" capture="environment">
+          <div class="drop__icon">🏠</div>
+          <div class="drop__text">Toca para adjuntar la prueba</div>
+          <div class="drop__meta">1 archivo · foto o PDF</div>
+          <div class="drop__files" id="files-res"></div>
+        </div>
+        <div class="err-msg" id="err-res">Adjunta un documento que acredite tu residencia.</div>
+      </div>
+
+      <button type="submit" class="submit" id="submit">Enviar documentación</button>
+
+      <div class="privacy">
+        <span class="privacy__lock">🔒</span>
+        <span>Tus documentos se envían de forma segura a tu expediente y no se comparten con terceros. Solo se usan para tu proceso.</span>
+      </div>
+    </form>
+  </div>
+
+  <div class="foot">
+    <div class="foot__name">Jorge Hernán-Gómez Rodríguez</div>
+    Consultor Financiero Independiente
+  </div>
+</div>
+
+<!-- Overlays -->
+<div class="overlay" id="ov-loading">
+  <div class="overlay__box">
+    <div class="spinner"></div>
+    <div class="overlay__title">Enviando tu documentación…</div>
+    <div class="overlay__text">Estamos preparando y subiendo tus archivos. No cierres esta ventana, tardará solo unos segundos.</div>
+  </div>
+</div>
+
+<div class="overlay" id="ov-ok">
+  <div class="overlay__box">
+    <div class="ok-check">✓</div>
+    <div class="overlay__title">¡Documentación recibida!</div>
+    <div class="overlay__text">Tus documentos han llegado correctamente a tu expediente. Ya puedes cerrar esta ventana. Gracias.</div>
+  </div>
+</div>
+
+<div class="overlay" id="ov-fail">
+  <div class="overlay__box">
+    <div class="fail-x">✕</div>
+    <div class="overlay__title">No se pudo completar el envío</div>
+    <div class="overlay__text">Ha habido un problema al enviar los archivos. Comprueba tu conexión e inténtalo de nuevo. Si vuelve a fallar, escríbeme y lo resolvemos.</div>
+    <button class="retry" id="retry">Volver a intentarlo</button>
+  </div>
+</div>
+
+<script>
+const WEBHOOK = 'https://hook.eu1.make.com/875oxmau18rkevsgm97yp13hhkdcu63i';
+
+// Estado de archivos seleccionados
+const state = { dni: [], cert: [], res: [] };
+
+// Formatea tamaño legible
+function fmtSize(bytes){
+  if(bytes < 1024) return bytes + ' B';
+  if(bytes < 1048576) return (bytes/1024).toFixed(0) + ' KB';
+  return (bytes/1048576).toFixed(1) + ' MB';
+}
+
+// Comprime imágenes en el navegador; los PDF pasan tal cual
+async function processFile(file){
+  if(!file.type.startsWith('image/')) return file; // PDF u otros: sin tocar
+  try{
+    const bitmap = await createImageBitmap(file);
+    let {width, height} = bitmap;
+    const MAX = 1800;
+    if(width > MAX || height > MAX){
+      const s = MAX / Math.max(width, height);
+      width = Math.round(width*s); height = Math.round(height*s);
+    }
+    const canvas = document.createElement('canvas');
+    canvas.width = width; canvas.height = height;
+    canvas.getContext('2d').drawImage(bitmap, 0, 0, width, height);
+    const blob = await new Promise(r => canvas.toBlob(r, 'image/jpeg', 0.82));
+    if(!blob || blob.size >= file.size) return file; // si no mejora, original
+    const name = file.name.replace(/\.[^.]+$/, '') + '.jpg';
+    return new File([blob], name, {type:'image/jpeg'});
+  }catch(e){
+    return file; // si el navegador no puede decodificar (p.ej. HEIC), enviamos original
+  }
+}
+
+// Pinta los chips de archivos de un campo
+function renderFiles(key, containerId){
+  const c = document.getElementById(containerId);
+  c.innerHTML = '';
+  state[key].forEach(f=>{
+    const chip = document.createElement('div');
+    chip.className = 'chip';
+    chip.innerHTML = `<span class="chip__check">✓</span><span class="chip__name">${f.name}</span><span class="chip__size">${fmtSize(f.size)}</span>`;
+    c.appendChild(chip);
+  });
+}
+
+// Configura un campo de subida
+function setupDrop(inputId, dropId, key, filesId, max){
+  const input = document.getElementById(inputId);
+  const drop = document.getElementById(dropId);
+  input.addEventListener('change', async ()=>{
+    let files = Array.from(input.files).slice(0, max);
+    // Procesa (comprime) cada archivo
+    const processed = [];
+    for(const f of files){ processed.push(await processFile(f)); }
+    state[key] = processed;
+    renderFiles(key, filesId);
+    drop.classList.toggle('has-file', processed.length>0);
+    drop.classList.remove('error');
+    document.getElementById('err-'+key).classList.remove('show');
+  });
+}
+
+setupDrop('dni','drop-dni','dni','files-dni',2);
+setupDrop('cert','drop-cert','cert','files-cert',1);
+setupDrop('res','drop-res','res','files-res',1);
+
+// Validación
+function isEmail(v){ return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v); }
+
+function validate(){
+  let ok = true;
+  const nombre = document.getElementById('nombre').value.trim();
+  const email = document.getElementById('email').value.trim();
+
+  const setErr = (id, cond) => {
+    document.getElementById('err-'+id).classList.toggle('show', !cond);
+    if(!cond) ok = false;
+  };
+  setErr('nombre', nombre.length >= 3 && nombre.includes(' '));
+  setErr('email', isEmail(email));
+
+  const dniOk = state.dni.length >= 1;
+  document.getElementById('drop-dni').classList.toggle('error', !dniOk);
+  document.getElementById('err-dni').classList.toggle('show', !dniOk);
+  if(!dniOk) ok = false;
+
+  const certOk = state.cert.length >= 1;
+  document.getElementById('drop-cert').classList.toggle('error', !certOk);
+  document.getElementById('err-cert').classList.toggle('show', !certOk);
+  if(!certOk) ok = false;
+
+  const resOk = state.res.length >= 1;
+  document.getElementById('drop-res').classList.toggle('error', !resOk);
+  document.getElementById('err-res').classList.toggle('show', !resOk);
+  if(!resOk) ok = false;
+
+  return ok;
+}
+
+function showOverlay(id){
+  ['ov-loading','ov-ok','ov-fail'].forEach(o=>document.getElementById(o).classList.remove('show'));
+  if(id) document.getElementById(id).classList.add('show');
+}
+
+async function send(){
+  showOverlay('ov-loading');
+  const fd = new FormData();
+  fd.append('nombre', document.getElementById('nombre').value.trim());
+  fd.append('email', document.getElementById('email').value.trim());
+  // DNI: dni_1 y (opcional) dni_2
+  fd.append('dni_1', state.dni[0], state.dni[0].name);
+  if(state.dni[1]) fd.append('dni_2', state.dni[1], state.dni[1].name);
+  fd.append('certificado_bancario', state.cert[0], state.cert[0].name);
+  fd.append('prueba_residencia', state.res[0], state.res[0].name);
+
+  try{
+    // no-cors garantiza que el POST llegue a Make aunque no devuelva cabeceras CORS
+    await fetch(WEBHOOK, { method:'POST', body:fd, mode:'no-cors' });
+    showOverlay('ov-ok');
+  }catch(e){
+    showOverlay('ov-fail');
+  }
+}
+
+document.getElementById('form').addEventListener('submit', (e)=>{
+  e.preventDefault();
+  if(validate()) send();
+  else document.querySelector('.err-msg.show')?.scrollIntoView({behavior:'smooth', block:'center'});
+});
+
+document.getElementById('retry').addEventListener('click', ()=>{ showOverlay(null); });
+</script>
+
+</body>
+</html>
