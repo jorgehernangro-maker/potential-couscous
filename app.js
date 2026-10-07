@@ -182,6 +182,8 @@ function freshState() {
     txns: []
   };
 }
+/** Fuera de las bolsas, el importe siempre es al mes */
+function toMonthly(c) { if (c.kind === 'gasto' && c.group !== 'bolsas' && c.freq === 'año') { c.budget = round2((c.budget || 0) / 12); c.freq = 'mes'; } }
 function normalize(s) {
   const base = freshState();
   const out = { ...base, ...s };
@@ -225,6 +227,7 @@ function normalize(s) {
     if (tv && vc && !out.settings.pots[vc.id]) out.settings.pots[vc.id] = tv;
   }
   delete out.settings.travel;
+  out.categories.forEach(toMonthly);
   out.v = 6;
   return out;
 }
@@ -1005,8 +1008,6 @@ function viewPlan() {
         <div class="plan-input"><input id="plan-income" class="input num" inputmode="decimal" data-plan="income" value="${numInput(S.plan.income)}" placeholder="0,00" style="text-align:left;font-size:18px;font-weight:700"></div>
         <p class="hint">Lo que te entra limpio en la cuenta. Si cobras pagas extra, suma todo el año y divídelo entre 12.</p></div>
     </section>
-    <section class="card" style="padding:12px 16px"><p class="card-note" style="margin:0">En cada partida elige <b>Al mes</b> o <b>Al año</b>. Si pones lo que pagas al año, la app lo reparte en 12 meses.</p>
-    </section>
 
     ${GROUPS.map((g) => `<section class="card">
       <div class="card-head"><h2 class="card-title">${g.name}</h2><span class="card-note num" data-bind="group-${g.id}">${money(groupBudget(g.id))} al mes</span></div>
@@ -1016,7 +1017,7 @@ function viewPlan() {
 
     <section class="card" id="pots-card">
       <div class="card-head"><h2 class="card-title">${POT.name}</h2><span class="card-note num" data-bind="group-${POT.id}">${money(groupBudget(POT.id))} al mes</span></div>
-      <p class="card-note" style="margin:-6px 0 6px">No son gastos del mes. Cada mes se aparta su parte en la cuenta que elijas y, el mes que pagas, se resta de su bolsa.</p>
+      <p class="card-note" style="margin:-6px 0 6px">No son gastos del mes. Cada mes se aparta su parte en la cuenta que elijas y, el mes que pagas, se resta de su bolsa. Elige <b>Al mes</b> o <b>Al año</b>: si pones lo que pagas al año, la app lo reparte en 12 meses.</p>
       ${potCats().map((c) => `${planRow(c)}<div class="pot-meta" data-bind="pot-${c.id}">${potMetaHTML(c)}</div>`).join('')}
       <button class="link-btn" data-act="new-cat" data-group="${POT.id}" style="margin-top:10px">+ Añadir bolsa</button>
     </section>
@@ -1035,6 +1036,10 @@ function viewPlan() {
   </div>`;
 }
 function planRow(c) {
+  if (!isPot(c)) return `<div class="plan-row">
+        <div class="name">${esc(c.name)}</div>
+        <div class="plan-input"><input class="num" inputmode="decimal" data-cat="${c.id}" value="${numInput(c.budget)}" placeholder="0" aria-label="Importe al mes de ${esc(c.name)}"></div>
+      </div>`;
   return `<div class="plan-row">
         <div class="name">${esc(c.name)}
           <div class="freq-seg" role="group" aria-label="Importe de ${esc(c.name)}"><button data-act="freq-set" data-id="${c.id}" data-f="mes" aria-pressed="${c.freq !== 'año'}">Al mes</button><button data-act="freq-set" data-id="${c.id}" data-f="año" aria-pressed="${c.freq === 'año'}">Al año</button></div>
@@ -1133,7 +1138,7 @@ function viewSettings() {
       <button class="btn danger" data-act="wipe">Borrar todos los datos</button>
     </section>
 
-    <div class="about"><b>Mis Finanzas</b>Jorge Hernán-Gómez Rodríguez · Consultor Financiero Independiente<br>Versión 1.9</div>
+    <div class="about"><b>Mis Finanzas</b>Jorge Hernán-Gómez Rodríguez · Consultor Financiero Independiente<br>Versión 1.9.1</div>
   </div>
   <input type="file" id="import-file" accept=".json,application/json" hidden>`;
 }
@@ -1677,7 +1682,7 @@ function openCatForm(existing = null, preset = {}) {
       const name = $('#c-name', root).value.trim();
       if (!name) { const er = $('#c-err', root); er.textContent = 'Ponle un nombre.'; er.hidden = false; return; }
       c.name = name;
-      if (c.kind === 'gasto') c.group = $('#c-group', root).value; else c.yield = $('#c-yield', root).checked;
+      if (c.kind === 'gasto') { c.group = $('#c-group', root).value; toMonthly(c); } else c.yield = $('#c-yield', root).checked;
       if (existing) S.categories = S.categories.map((x) => x.id === c.id ? c : x); else { c.id = uid(); S.categories.push(c); }
       save(); closeSheet(); render(); toast(existing ? 'Categoría guardada' : 'Categoría añadida');
     });

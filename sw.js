@@ -1,6 +1,6 @@
 // Mis Finanzas — service worker: la app funciona sin conexión.
 // Al publicar una versión nueva, sube el número de VERSION para que los móviles la descarguen.
-const VERSION = 'mf-v1.9.0';
+const VERSION = 'mf-v1.9.1';
 const FILES = [
   './',
   './index.html',
