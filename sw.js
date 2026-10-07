@@ -1,21 +1,21 @@
 // Mis Finanzas — service worker: la app funciona sin conexión.
 // Al publicar una versión nueva, sube el número de VERSION para que los móviles la descarguen.
-const VERSION = 'mf-v1.0.0';
+const VERSION = 'mf-v1.0.1';
 const FILES = [
   './',
   './index.html',
   './styles.css',
   './app.js',
   './manifest.webmanifest',
-  './icons/icon-192.png',
-  './icons/icon-512.png',
-  './icons/icon-maskable-512.png',
-  './icons/apple-touch-icon.png',
-  './icons/favicon.png',
-  './fonts/montserrat-latin-400-normal.woff2',
-  './fonts/montserrat-latin-500-normal.woff2',
-  './fonts/montserrat-latin-600-normal.woff2',
-  './fonts/montserrat-latin-700-normal.woff2'
+  './icon-192.png',
+  './icon-512.png',
+  './icon-maskable-512.png',
+  './apple-touch-icon.png',
+  './favicon.png',
+  './montserrat-latin-400-normal.woff2',
+  './montserrat-latin-500-normal.woff2',
+  './montserrat-latin-600-normal.woff2',
+  './montserrat-latin-700-normal.woff2'
 ];
 
 self.addEventListener('install', (event) => {
