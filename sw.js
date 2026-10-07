@@ -1,6 +1,6 @@
 // Mis Finanzas — service worker: la app funciona sin conexión.
 // Al publicar una versión nueva, sube el número de VERSION para que los móviles la descarguen.
-const VERSION = 'mf-v1.8.0';
+const VERSION = 'mf-v1.8.1';
 const FILES = [
   './',
   './index.html',
@@ -19,7 +19,12 @@ const FILES = [
 ];
 
 self.addEventListener('install', (event) => {
-  event.waitUntil(caches.open(VERSION).then((cache) => cache.addAll(FILES)));
+  // cache: 'reload' obliga a descargar los archivos del servidor y no reutilizar copias viejas del navegador
+  event.waitUntil(
+    caches.open(VERSION)
+      .then((cache) => cache.addAll(FILES.map((f) => new Request(f, { cache: 'reload' }))))
+      .then(() => self.skipWaiting()) // la versión nueva entra sola; la app se recarga y los datos no se tocan
+  );
 });
 
 self.addEventListener('activate', (event) => {
