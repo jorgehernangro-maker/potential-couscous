@@ -17,23 +17,23 @@ const GROUPS = [
   { id: 'variables', name: 'Gastos variables' },
   { id: 'disfrutar', name: 'Disfrutar' }
 ];
-const ACCOUNT_TYPES = {
-  cuenta: [
-    { name: 'Cuenta corriente', block: 1 },
-    { name: 'Cuenta de ahorro', block: 1 },
-    { name: 'Cuenta remunerada', block: 1 },
-    { name: 'Efectivo', block: 1 },
-    { name: 'Otra cuenta', block: 1 }
-  ],
-  inversion: [
-    { name: 'Fondo indexado o ETF', block: 3 },
-    { name: 'Plan de pensiones', block: 2 },
-    { name: 'Acciones', block: 3 },
-    { name: 'Depósito', block: 1 },
-    { name: 'Inmueble en alquiler', block: 4 },
-    { name: 'Otra inversión', block: 3 }
-  ]
+// Bloque 1: cuentas, clasificadas por su uso
+const CUENTA_USES = [
+  { id: 'liquidez',  name: 'Liquidez general',      desc: 'El dinero del día a día: nómina, recibos y gastos' },
+  { id: 'colchon',   name: 'Colchón de emergencia', desc: 'Para imprevistos. No se toca para nada más' },
+  { id: 'objetivos', name: 'Cuenta de objetivos',   desc: 'Dinero apartado para algo concreto: un viaje, el coche, la entrada del piso' }
+];
+// Bloques 2, 3 y 4: inversiones
+const INV_TYPES = {
+  2: ['Plan de pensiones', 'Fondo indexado o ETF', 'Seguro de ahorro', 'Otra inversión'],
+  3: ['Fondo indexado o ETF', 'Acciones', 'Materias primas', 'Otra inversión'],
+  4: ['Depósito', 'Bonos o letras', 'Deuda privada', 'Otra renta fija']
 };
+const FREQS = [
+  { every: 1, name: 'Cada mes' }, { every: 3, name: 'Cada trimestre' }, { every: 6, name: 'Cada semestre' },
+  { every: 12, name: 'Cada año' }, { every: 0, name: 'Al vencimiento' }
+];
+const useOf = (a) => CUENTA_USES.find((u) => u.id === a.use) || CUENTA_USES[0];
 const WORK_DAYS = 20;            // días laborables al mes (sueldo / 20, como en el Excel)
 const LOCK_AFTER_MS = 60 * 1000; // con PIN: bloquear al volver tras 1 minuto fuera
 const BACKUP_EVERY_DAYS = 30;
@@ -160,12 +160,12 @@ function defaultCategories() {
     g('Comida', 'variables'), g('Gasolina', 'variables'), g('Luz', 'variables'), g('Gas', 'variables'),
     g('Agua', 'variables'), g('Salud', 'variables'), g('Otros gastos', 'variables'),
     g('Ocio', 'disfrutar'), g('Viajes', 'disfrutar'),
-    i('Nómina'), i('Intereses', true), i('Saveback', true), i('Dividendos', true), i('Otros ingresos')
+    i('Nómina'), i('Intereses', true), i('Saveback', true), i('Dividendos', true), i('Rentas', true), i('Otros ingresos')
   ];
 }
 function freshState() {
   return {
-    v: 1,
+    v: 2,
     created: today(),
     onboarded: false,
     settings: { name: '', cushionMonths: 6, pinHash: null, lastBackup: null, backupSnooze: null, installHintHidden: false, lastAccount: {} },
@@ -184,6 +184,14 @@ function normalize(s) {
   out.plan = { ...base.plan, ...(s.plan || {}) };
   out.plan.contrib = { ...base.plan.contrib, ...((s.plan || {}).contrib || {}) };
   for (const k of ['accounts', 'valuations', 'categories', 'txns']) if (!Array.isArray(out[k])) out[k] = base[k];
+  if (!out.categories.length) out.categories = defaultCategories();
+  // v1 → v2: el bloque 1 solo tiene cuentas (con su uso) y los bloques 2-4 solo inversiones
+  for (const a of out.accounts) {
+    if (a.kind === 'cuenta') { a.block = 1; if (!a.use) a.use = 'liquidez'; a.type = useOf(a).name; }
+    else if (a.kind === 'inversion' && ![2, 3, 4].includes(a.block)) a.block = 3;
+  }
+  if (!out.categories.some((x) => x.kind === 'ingreso' && x.name === 'Rentas')) out.categories.splice(out.categories.findIndex((x) => x.kind === 'ingreso' && /^otros/i.test(x.name)) >>> 0, 0, { id: uid(), kind: 'ingreso', name: 'Rentas', yield: true });
+  out.v = 2;
   return out;
 }
 
@@ -231,6 +239,7 @@ function book(a, d) { if (d < a.start) return null; return round2(a.initial + fl
 /** Valor de mercado de una inversión: última valoración + movimientos posteriores */
 function marketValue(a, d) {
   if (d < a.start) return null;
+  if (isRenta(a)) return a.rentas.every === 0 ? round2(book(a, d) + accrued(a, d)) : book(a, d);
   let last = null;
   for (const v of S.valuations) if (v.accountId === a.id && v.date <= d && v.date >= a.start && (!last || v.date > last.date || (v.date === last.date && v.at > last.at))) last = v;
   if (!last) return book(a, d);
@@ -245,6 +254,60 @@ function marketValue(a, d) {
 function value(a, d) { return isInv(a) ? marketValue(a, d) : book(a, d); }
 /** Revalorización acumulada hasta la fecha (valor − aportado) */
 function gainTo(a, d) { if (d < a.start) return 0; return round2(marketValue(a, d) - book(a, d)); }
+
+/* Rentas (bloque 4): interés y plazo definidos */
+const isRenta = (a) => a && a.kind === 'inversion' && a.block === 4 && a.rentas;
+function addMonthsToDate(date, n) {
+  const [y, m, d] = date.split('-').map(Number);
+  const t = new Date(y, m - 1 + n, 1);
+  const last = new Date(t.getFullYear(), t.getMonth() + 1, 0).getDate();
+  return `${t.getFullYear()}-${pad(t.getMonth() + 1)}-${pad(Math.min(d, last))}`;
+}
+function payDates(a) {
+  const r = a.rentas, out = [];
+  if (!r || !r.every || !r.end) return out;
+  for (let k = 1; k < 1200; k++) { const d = addMonthsToDate(a.start, k * r.every); if (d > r.end) break; out.push(d); }
+  return out;
+}
+/** Intereses devengados (al vencimiento): capital × interés × días / 365 */
+function accrued(a, d) {
+  const r = a.rentas; if (!r) return 0;
+  const x = d < r.end ? d : r.end;
+  if (x <= a.start) return 0;
+  return round2(a.initial * r.rate * daysBetween(a.start, x) / 365);
+}
+function suggestedPay(capital, rate, every) { return round2((Number(capital) || 0) * (Number(rate) || 0) * every / 12); }
+function rentasInfo(a, d = today()) {
+  const r = a.rentas;
+  const matured = d >= r.end;
+  if (r.every === 0) {
+    const total = round2(a.initial * r.rate * daysBetween(a.start, r.end) / 365);
+    return { total, generated: accrued(a, d), next: matured ? null : r.end, nextAmount: total, matured, perPay: null };
+  }
+  const dates = payDates(a);
+  const total = round2(dates.length * r.payAmount);
+  const generated = round2(S.txns.filter((t) => t.srcId === a.id && t.date <= d).reduce((s, t) => s + t.amount, 0));
+  const next = dates.find((x) => x > d) || null;
+  return { total, generated, next, nextAmount: r.payAmount, matured, perPay: r.payAmount };
+}
+/** Apunta solos los cobros de intereses que ya han llegado */
+function syncRentas() {
+  let n = 0;
+  const now = today();
+  let catR = S.categories.find((x) => x.kind === 'ingreso' && x.name === 'Rentas') || S.categories.find((x) => x.kind === 'ingreso' && x.yield);
+  for (const a of S.accounts) {
+    if (!isRenta(a) || !a.rentas.every || !acc(a.rentas.payAccountId)) continue;
+    const from = a.rentas.paidUntil || a.start;
+    for (const d of payDates(a)) {
+      if (d <= from || d > now) continue;
+      S.txns.push({ id: uid(), type: 'ingreso', amount: a.rentas.payAmount, date: d, accountId: a.rentas.payAccountId, toAccountId: null,
+        categoryId: catR ? catR.id : null, note: `Intereses de ${a.name}`, at: Date.now() + n, auto: true, srcId: a.id });
+      a.rentas.paidUntil = d; n++;
+    }
+  }
+  if (n) save();
+  return n;
+}
 
 function netWorth(d) { let s = 0; for (const a of S.accounts) { const v = value(a, d); if (v != null) s += v; } return round2(s); }
 function blockTotals(d) {
@@ -609,6 +672,7 @@ function txRow(t) {
   else if (t.type === 'ingreso') { ico = `<span class="ico in">${icon('up')}</span>`; title = c ? c.name : 'Ingreso'; amt = `<span class="row-amount num pos">${money(t.amount, { sign: true })}</span>`; sub = a ? a.name : ''; }
   else { ico = `<span class="ico tr">${icon('swap')}</span>`; title = 'Traspaso'; amt = `<span class="row-amount num">${money(t.amount)}</span>`; sub = `${a ? a.name : '?'} → ${to ? to.name : '?'}`; }
   if (t.note) sub += ` · ${t.note}`;
+  if (t.auto) sub += ' · automático';
   return `<button class="list-row" data-act="edit-tx" data-id="${t.id}">${ico}<span class="row-main"><span class="row-title" style="display:block">${esc(title)}</span><span class="row-sub" style="display:block">${esc(sub)}</span></span>${amt}</button>`;
 }
 
@@ -617,17 +681,30 @@ function viewAccounts() {
   const now = today();
   const totals = blockTotals(now);
   const active = activeAccounts(), archived = S.accounts.filter((a) => a.archived);
+  const head = (b) => `<div class="block-head"><span class="bh-name"><span class="dot" style="background:${b.hex}"></span>${b.id} · ${b.name}</span><span class="bh-total num">${money0(totals[b.id])}</span></div><p class="block-desc">${b.desc}</p>`;
+  const addRow = (label, attrs) => `<div class="list"><button class="list-row" data-act="new-account" ${attrs}><span class="row-main"><span class="row-sub" style="display:block">${label} · <b style="color:var(--olive-2)">Añadir</b></span></span></button></div>`;
+  let blocksHTML = '';
+  if (S.accounts.length) {
+    const b1 = BLOCKS[0];
+    const cuentas = active.filter((a) => a.kind === 'cuenta');
+    blocksHTML += head(b1);
+    if (!cuentas.length) blocksHTML += addRow('Aún no tienes cuentas', 'data-kind="cuenta"');
+    for (const u of CUENTA_USES) {
+      const list = cuentas.filter((a) => (a.use || 'liquidez') === u.id);
+      if (!list.length) continue;
+      const sub = round2(list.reduce((s, a) => s + (value(a, now) ?? 0), 0));
+      blocksHTML += `<div class="sub-head"><span>${u.name}</span><span class="num">${money0(sub)}</span></div><div class="list">${list.map(accountRow).join('')}</div>`;
+    }
+    for (const b of BLOCKS.slice(1)) {
+      const list = active.filter((a) => a.kind === 'inversion' && a.block === b.id);
+      blocksHTML += head(b) + (list.length ? `<div class="list">${list.map(accountRow).join('')}</div>` : addRow('Nada en este bloque todavía', `data-kind="inversion" data-block="${b.id}"`));
+    }
+  }
   return `${topbar('Cuentas', `${money0(netWorth(now))} en total`, `<button class="btn small" data-act="new-account">Añadir</button>`)}
   <div class="content">
-    ${!S.accounts.length ? `<div class="card empty"><h3>Tus cuentas, por bloques</h3><p>Añade cada cuenta corriente, de ahorro, fondo o plan de pensiones y elige a qué bloque pertenece.</p><button class="btn" data-act="new-account">Añadir cuenta o inversión</button></div>` : ''}
+    ${!S.accounts.length ? `<div class="card empty"><h3>Tus cuentas, por bloques</h3><p>En el bloque 1 van tus cuentas: la del día a día, tu colchón y las de objetivos. En los bloques 2, 3 y 4, tus inversiones.</p><button class="btn" data-act="new-account">Añadir cuenta o inversión</button></div>` : ''}
     ${S.accounts.length ? `<section class="card">${blockBar(totals, true)}${blockLegend(totals)}</section>` : ''}
-    ${BLOCKS.map((b) => {
-      const list = active.filter((a) => a.block === b.id);
-      if (!S.accounts.length) return '';
-      return `<div class="block-head"><span class="bh-name"><span class="dot" style="background:${b.hex}"></span>${b.id} · ${b.name}</span><span class="bh-total num">${money0(totals[b.id])}</span></div>
-        <p class="block-desc">${b.desc}</p>
-        ${list.length ? `<div class="list">${list.map(accountRow).join('')}</div>` : `<div class="list"><button class="list-row" data-act="new-account" data-block="${b.id}"><span class="row-main"><span class="row-sub" style="display:block">Nada en este bloque todavía · <b style="color:var(--olive-2)">Añadir</b></span></span></button></div>`}`;
-    }).join('')}
+    ${blocksHTML}
     ${archived.length ? `<div class="block-head"><span class="bh-name muted">Cerradas</span></div><div class="list">${archived.map(accountRow).join('')}</div>` : ''}
   </div>`;
 }
@@ -635,8 +712,12 @@ function accountRow(a) {
   const now = today();
   const v = value(a, now) ?? a.initial;
   let right = `<span class="row-amount num">${money(v)}</span>`;
-  let sub = a.type;
-  if (isInv(a)) {
+  let sub = a.kind === 'cuenta' ? useOf(a).name : a.type;
+  if (isRenta(a)) {
+    const info = rentasInfo(a, now);
+    sub = `${a.type} · ${pct(a.rentas.rate, 2)} · ${info.matured ? 'vencida' : `vence ${shortDate(a.rentas.end)}`}`;
+    right = `<span class="row-amount num">${money0(v)}<small class="pos">${money0(info.generated, { sign: true })} generado</small></span>`;
+  } else if (isInv(a)) {
     const g = gainTo(a, now), inv = book(a, now) ?? a.initial;
     const valued = S.valuations.some((x) => x.accountId === a.id);
     right = `<span class="row-amount num">${money0(v)}<small class="${!valued ? 'muted' : g < 0 ? 'neg' : g > 0 ? 'pos' : 'muted'}">${valued ? `${money0(g, { sign: true })}${inv > 0 ? ` · ${pct(g / inv)}` : ''}` : 'Valor sin actualizar'}</small></span>`;
@@ -694,14 +775,14 @@ function cushionHTML() {
   const pt = planTotals();
   const months = S.settings.cushionMonths || 6;
   const target = round2(pt.spend * months);
-  const have = blockTotals(today())[1];
+  const have = round2(S.accounts.filter((a) => a.kind === 'cuenta' && a.use === 'colchon').reduce((s, a) => s + (value(a, today()) || 0), 0));
   const covered = pt.spend > 0 ? have / pt.spend : 0;
   const ratio = target > 0 ? have / target : 0;
   return `<div class="card-head"><h2 class="card-title">Colchón de seguridad</h2>
       <select class="input" data-cushion style="width:auto;padding:6px 30px 6px 10px;font-size:13px;font-weight:700" aria-label="Meses de colchón">
         ${[3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map((m) => `<option value="${m}" ${m === months ? 'selected' : ''}>${m} meses</option>`).join('')}
       </select></div>
-    ${pt.spend > 0 ? `<div class="meter-top"><b>Tienes en Seguridad</b><span class="vals num">${money0(have)} <span class="muted">de ${money0(target)}</span></span></div>
+    ${pt.spend > 0 && !S.accounts.some((a) => a.kind === 'cuenta' && a.use === 'colchon') ? `<p class="card-note">Necesitas ${money0(target)}. Marca como «Colchón de emergencia» la cuenta que uses para imprevistos y aquí verás cuánto llevas.</p>` : pt.spend > 0 ? `<div class="meter-top"><b>Tienes en tu colchón</b><span class="vals num">${money0(have)} <span class="muted">de ${money0(target)}</span></span></div>
       <div class="meter ${ratio >= 1 ? '' : ratio >= 0.5 ? 'warn' : 'over'}"><span style="width:${Math.min(100, ratio * 100).toFixed(1)}%"></span></div>
       <p class="meter-foot ${ratio < 1 ? '' : ''}">${ratio >= 1 ? `Completo. Te cubre ${covered.toFixed(1).replace('.', ',')} meses de gastos.` : `Te cubre ${covered.toFixed(1).replace('.', ',')} meses de gastos. Te faltan ${money0(target - have)}.`}</p>`
       : `<p class="card-note">Pon tu presupuesto de gastos y aquí verás cuánto necesitas para estar tranquilo: tus gastos de un mes por ${months}.</p>`}`;
@@ -741,7 +822,7 @@ function viewSettings() {
       <button class="btn danger" data-act="wipe">Borrar todos los datos</button>
     </section>
 
-    <div class="about"><b>Mis Finanzas</b>Jorge Hernán-Gómez Rodríguez · Consultor Financiero Independiente<br>Versión 1.0</div>
+    <div class="about"><b>Mis Finanzas</b>Jorge Hernán-Gómez Rodríguez · Consultor Financiero Independiente<br>Versión 1.1</div>
   </div>
   <input type="file" id="import-file" accept=".json,application/json" hidden>`;
 }
@@ -794,7 +875,7 @@ function bindWelcome() {
       if (isFinite(inc) && inc > 0) S.plan.income = inc;
       S.onboarded = true; UI.tab = 'cuentas';
       save(); render();
-      setTimeout(() => openAccountForm(), 250);
+      setTimeout(() => openAccountForm(null, { kind: 'cuenta' }), 250);
     });
   }
 }
@@ -897,7 +978,7 @@ function confirmSheet({ title, text, ok = 'Aceptar', danger = false }) {
 function openTxForm(existing = null, preset = {}) {
   if (!activeAccounts().length) { toast('Primero añade una cuenta'); UI.tab = 'cuentas'; render(); setTimeout(() => openAccountForm(), 200); return; }
   const t = existing ? { ...existing } : {
-    id: null, type: preset.type || 'gasto', amount: '', date: today(), categoryId: null, note: '',
+    id: null, type: preset.type || 'gasto', amount: preset.amount ? round2(preset.amount) : '', date: today(), categoryId: null, note: '',
     accountId: preset.accountId || null, toAccountId: preset.toAccountId || null
   };
   const draw = (root) => {
@@ -971,68 +1052,145 @@ function openTxForm(existing = null, preset = {}) {
 
 /* ── Cuenta / inversión ─────────────────────────────────── */
 function openAccountForm(existing = null, preset = {}) {
-  const a = existing ? { ...existing } : { id: null, kind: 'cuenta', name: '', type: ACCOUNT_TYPES.cuenta[0].name, block: preset.block || 1, initial: '', start: today(), currentValue: '' };
-  let blockTouched = !!existing || !!preset.block;
+  const kind0 = preset.kind || (preset.block && preset.block > 1 ? 'inversion' : 'cuenta');
+  const blk0 = kind0 === 'inversion' ? (preset.block && preset.block > 1 ? preset.block : 3) : 1;
+  const a = existing ? JSON.parse(JSON.stringify(existing)) : {
+    id: null, kind: kind0, name: '', use: 'liquidez', block: blk0, type: kind0 === 'inversion' ? INV_TYPES[blk0][0] : '',
+    initial: '', start: today(), currentValue: '', rentas: null
+  };
+  if (a.kind === 'inversion' && a.block === 4 && !a.rentas) a.rentas = { rate: '', end: '', every: 3, payAmount: '', payAccountId: null, paidUntil: null };
+  let payTouched = !!(existing && existing.rentas);
+  const used = !!(existing && accountUsed(existing.id));
+  const cuentas = () => activeAccounts().filter((x) => x.kind === 'cuenta');
+
   const draw = (root) => {
-    const types = ACCOUNT_TYPES[a.kind];
+    const isR = a.kind === 'inversion' && a.block === 4;
+    const r = a.rentas || {};
+    if (isR && r.every && !payTouched) r.payAmount = suggestedPay(a.initial, r.rate, r.every) || '';
+    if (isR && r.every && !r.payAccountId) r.payAccountId = (cuentas().find((x) => x.use === 'liquidez') || cuentas()[0] || {}).id || null;
+    const preview = () => {
+      if (!isR || !(a.initial > 0) || !(r.rate > 0) || !r.end || r.end <= a.start) return '';
+      const tmp = { ...a, initial: Number(a.initial), rentas: { ...r, payAmount: Number(r.payAmount) || 0 } };
+      const total = r.every === 0 ? round2(tmp.initial * r.rate * daysBetween(a.start, r.end) / 365) : round2(payDates(tmp).length * (Number(r.payAmount) || 0));
+      const n = r.every ? payDates(tmp).length : 1;
+      return `<div class="earn-fact" style="margin:0"><b class="num">${money(total)}</b><span>de intereses en total${r.every ? `, en ${n} cobro${n === 1 ? '' : 's'}` : ', al vencer'} hasta el ${shortDate(r.end)}</span></div>`;
+    };
     root.innerHTML = `<div class="sheet-grip"></div><div class="sheet-head"><h2>${a.id ? 'Editar' : 'Nueva cuenta o inversión'}</h2>${closeBtn()}</div>
       <form class="form" id="acc-form" novalidate>
         ${a.id ? '' : `<div class="seg" role="group" aria-label="Qué es" style="align-self:center">
           <button type="button" data-kind="cuenta" aria-pressed="${a.kind === 'cuenta'}">Cuenta</button>
           <button type="button" data-kind="inversion" aria-pressed="${a.kind === 'inversion'}">Inversión</button></div>`}
-        <div class="field"><label for="a-name">Nombre</label><input id="a-name" class="input" value="${esc(a.name)}" placeholder="${a.kind === 'cuenta' ? 'Por ejemplo, Cuenta nómina' : 'Por ejemplo, Fondo MSCI World'}" maxlength="40"></div>
-        <div class="field"><label for="a-type">Tipo</label><select id="a-type" class="input">${types.map((x) => `<option ${x.name === a.type ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select></div>
-        <div class="field"><label for="a-block">Bloque</label><select id="a-block" class="input">${BLOCKS.map((b) => `<option value="${b.id}" ${b.id === a.block ? 'selected' : ''}>${b.id} · ${b.name}</option>`).join('')}</select>
-          <p class="hint">${BLOCKS.find((b) => b.id === a.block).desc}.</p></div>
-        ${a.id && accountUsed(a.id) ? `<p class="hint" style="font-size:12px;color:var(--ink-3)">Saldo inicial: ${money(a.initial)} el ${shortDate(a.start)}. Para corregir el saldo, apunta un movimiento.</p>` : `
+        <div class="field"><label for="a-name">Nombre</label><input id="a-name" class="input" value="${esc(a.name)}" placeholder="${a.kind === 'cuenta' ? 'Por ejemplo, Cuenta nómina' : isR ? 'Por ejemplo, Depósito Banco X' : 'Por ejemplo, Fondo MSCI World'}" maxlength="40"></div>
+        ${a.kind === 'cuenta'
+          ? `<div class="field"><label for="a-use">¿Para qué la usas?</label><select id="a-use" class="input">${CUENTA_USES.map((u) => `<option value="${u.id}" ${u.id === a.use ? 'selected' : ''}>${u.name}</option>`).join('')}</select>
+              <p class="hint">${useOf(a).desc}. Va en el bloque 1 · Seguridad.</p></div>`
+          : `<div class="two">
+              <div class="field"><label for="a-block">Bloque</label><select id="a-block" class="input">${BLOCKS.slice(1).map((b) => `<option value="${b.id}" ${b.id === a.block ? 'selected' : ''}>${b.id} · ${b.name}</option>`).join('')}</select></div>
+              <div class="field"><label for="a-type">Tipo</label><select id="a-type" class="input">${INV_TYPES[a.block].map((t) => `<option ${t === a.type ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select></div>
+            </div><p class="hint" style="margin:-8px 0 0;font-size:12px;color:var(--ink-3)">${BLOCKS.find((b) => b.id === a.block).desc}.</p>`}
+        ${used ? `<p class="hint" style="font-size:12px;color:var(--ink-3)">${isR ? 'Capital' : 'Saldo inicial'}: ${money(a.initial)} desde el ${shortDate(a.start)}. Para corregir el saldo, apunta un movimiento.</p>` : `
         <div class="two">
-          <div class="field"><label for="a-initial">${a.kind === 'cuenta' ? 'Saldo' : 'Lo que has aportado'}</label><input id="a-initial" class="input num" inputmode="decimal" value="${a.initial === '' ? '' : numInput(a.initial)}" placeholder="0,00"></div>
-          <div class="field"><label for="a-start">A fecha de</label><input id="a-start" type="date" class="input" value="${a.start}"></div>
+          <div class="field"><label for="a-initial">${a.kind === 'cuenta' ? 'Saldo' : isR ? 'Capital invertido' : 'Lo que has aportado'}</label><input id="a-initial" class="input num" inputmode="decimal" value="${a.initial === '' ? '' : numInput(a.initial)}" placeholder="0,00"></div>
+          <div class="field"><label for="a-start">${isR ? 'Fecha de inicio' : 'A fecha de'}</label><input id="a-start" type="date" class="input" value="${a.start}"></div>
         </div>
-        ${a.kind === 'inversion' && !a.id ? `<div class="field"><label for="a-value">Lo que vale ese día</label><input id="a-value" class="input num" inputmode="decimal" value="${a.currentValue === '' ? '' : numInput(a.currentValue)}" placeholder="Si no lo sabes, déjalo vacío"><p class="hint">Si vale más o menos de lo que has metido, ponlo aquí y verás tu rentabilidad.</p></div>` : ''}
-        <p class="hint" style="font-size:12px;color:var(--ink-3);margin:-4px 0 0">¿Quieres meter meses anteriores? Pon una fecha pasada y el saldo que tenías entonces.</p>`}
+        ${a.kind === 'inversion' && !isR && !a.id ? `<div class="field"><label for="a-value">Lo que vale ese día</label><input id="a-value" class="input num" inputmode="decimal" value="${a.currentValue === '' ? '' : numInput(a.currentValue)}" placeholder="Si no lo sabes, déjalo vacío"><p class="hint">Si vale más o menos de lo que has metido, ponlo aquí y verás tu rentabilidad.</p></div>` : ''}`}
+        ${isR ? `
+        <div class="two">
+          <div class="field"><label for="r-rate">Interés anual</label><input id="r-rate" class="input num" inputmode="decimal" value="${r.rate === '' ? '' : String(round2(r.rate * 10000) / 100).replace('.', ',')}" placeholder="Por ejemplo, 3,5"><p class="hint">En %, el que te da el producto.</p></div>
+          <div class="field"><label for="r-end">Vence el</label><input id="r-end" type="date" class="input" value="${r.end || ''}"></div>
+        </div>
+        <div class="field"><label for="r-every">¿Cuándo cobras los intereses?</label><select id="r-every" class="input">${FREQS.map((f) => `<option value="${f.every}" ${f.every === r.every ? 'selected' : ''}>${f.name}</option>`).join('')}</select></div>
+        ${r.every ? `<div class="two">
+          <div class="field"><label for="r-pay">Cobras cada vez</label><input id="r-pay" class="input num" inputmode="decimal" value="${r.payAmount === '' ? '' : numInput(r.payAmount)}" placeholder="0,00"><p class="hint">Calculado con el interés. Cámbialo si tu producto paga otra cantidad.</p></div>
+          <div class="field"><label for="r-acc">Te lo ingresan en</label>${cuentas().length ? `<select id="r-acc" class="input">${cuentas().map((x) => `<option value="${x.id}" ${x.id === r.payAccountId ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select>` : `<p class="hint" style="color:var(--bad)">Primero añade una cuenta del bloque 1.</p>`}</div>
+        </div>
+        <p class="hint" style="margin:-6px 0 0;font-size:12px;color:var(--ink-3)">La app apuntará sola cada cobro como ingreso en esa cuenta.</p>`
+        : `<p class="hint" style="margin:-6px 0 0;font-size:12px;color:var(--ink-3)">Los intereses se van sumando al valor día a día y los cobras todos al vencer.</p>`}
+        <div id="r-preview">${preview()}</div>` : ''}
+        ${!used ? `<p class="hint" style="font-size:12px;color:var(--ink-3);margin:-4px 0 0">${isR ? 'Si empezó antes de hoy, pon la fecha real: la app apuntará los cobros que ya has recibido.' : '¿Quieres meter meses anteriores? Pon una fecha pasada y el saldo que tenías entonces.'}</p>` : ''}
         <p class="form-error" id="a-err" hidden></p>
         <button class="btn block" type="submit">${a.id ? 'Guardar cambios' : 'Añadir'}</button>
-        ${a.id ? (accountUsed(a.id)
-          ? `<button class="btn ghost block" type="button" data-archive>${a.archived ? 'Reabrir cuenta' : 'Cerrar cuenta'}</button>`
+        ${a.id ? (used
+          ? `<button class="btn ghost block" type="button" data-archive>${a.archived ? 'Reabrir' : 'Cerrar'}</button>`
           : `<button class="btn danger block" type="button" data-del>Eliminar</button>`) : ''}
       </form>`;
     const keep = () => {
-      a.name = $('#a-name', root).value; a.type = $('#a-type', root).value; a.block = Number($('#a-block', root).value);
+      a.name = $('#a-name', root).value;
+      if ($('#a-use', root)) { a.use = $('#a-use', root).value; a.type = useOf(a).name; }
+      if ($('#a-block', root)) a.block = Number($('#a-block', root).value);
+      if ($('#a-type', root)) a.type = $('#a-type', root).value;
       if ($('#a-initial', root)) { a.initial = $('#a-initial', root).value === '' ? '' : parseAmount($('#a-initial', root).value); a.start = $('#a-start', root).value || today(); }
       if ($('#a-value', root)) a.currentValue = $('#a-value', root).value === '' ? '' : parseAmount($('#a-value', root).value);
+      if (a.rentas && $('#r-rate', root)) {
+        const pr = parseAmount($('#r-rate', root).value); a.rentas.rate = isFinite(pr) ? round2(pr / 100 * 10000) / 10000 : '';
+        a.rentas.end = $('#r-end', root).value;
+        a.rentas.every = Number($('#r-every', root).value);
+        if ($('#r-pay', root)) { const v = parseAmount($('#r-pay', root).value); a.rentas.payAmount = isFinite(v) ? v : ''; }
+        if ($('#r-acc', root)) a.rentas.payAccountId = $('#r-acc', root).value;
+      }
     };
-    $$('[data-kind]', root).forEach((b) => b.addEventListener('click', () => { keep(); a.kind = b.dataset.kind; a.type = ACCOUNT_TYPES[a.kind][0].name; if (!blockTouched) a.block = ACCOUNT_TYPES[a.kind][0].block; draw(root); }));
-    $('#a-type', root).addEventListener('change', () => { keep(); if (!blockTouched) { a.block = ACCOUNT_TYPES[a.kind].find((x) => x.name === a.type).block; } draw(root); });
-    $('#a-block', root).addEventListener('change', () => { keep(); blockTouched = true; draw(root); });
+    $$('[data-kind]', root).forEach((b) => b.addEventListener('click', () => {
+      keep(); a.kind = b.dataset.kind;
+      if (a.kind === 'cuenta') { a.block = 1; a.rentas = null; a.type = useOf(a).name; }
+      else { a.block = 3; a.type = INV_TYPES[3][0]; }
+      draw(root);
+    }));
+    $('#a-use', root)?.addEventListener('change', () => { keep(); draw(root); });
+    $('#a-block', root)?.addEventListener('change', () => {
+      keep(); a.type = INV_TYPES[a.block][0];
+      a.rentas = a.block === 4 ? (a.rentas || { rate: '', end: '', every: 3, payAmount: '', payAccountId: null, paidUntil: null }) : null;
+      draw(root);
+    });
+    const refreshPreview = () => { keep(); if (a.rentas && a.rentas.every && !payTouched && $('#r-pay', root)) { a.rentas.payAmount = suggestedPay(a.initial, a.rentas.rate, a.rentas.every) || ''; $('#r-pay', root).value = a.rentas.payAmount === '' ? '' : numInput(a.rentas.payAmount); } const pv = $('#r-preview', root); if (pv) pv.innerHTML = preview(); };
+    ['#a-initial', '#r-rate', '#r-end', '#a-start'].forEach((s) => $(s, root)?.addEventListener('input', refreshPreview));
+    $('#r-pay', root)?.addEventListener('input', () => { payTouched = true; keep(); const pv = $('#r-preview', root); if (pv) pv.innerHTML = preview(); });
+    $('#r-every', root)?.addEventListener('change', () => { keep(); payTouched = false; draw(root); });
     $('#acc-form', root).addEventListener('submit', (e) => {
       e.preventDefault(); keep();
-      const err = $('#a-err', root); const fail = (m) => { err.textContent = m; err.hidden = false; };
+      const err = $('#a-err', root); const fail = (m) => { err.textContent = m; err.hidden = false; err.scrollIntoView({ block: 'center' }); };
       if (!a.name.trim()) return fail('Ponle un nombre.');
-      if (a.initial !== '' && !isFinite(a.initial)) return fail('Revisa el saldo.');
+      if (a.initial !== '' && !isFinite(a.initial)) return fail('Revisa el importe.');
       if (a.currentValue !== '' && a.currentValue !== undefined && !isFinite(a.currentValue)) return fail('Revisa el valor.');
+      const isR = a.kind === 'inversion' && a.block === 4;
+      if (isR) {
+        const r = a.rentas;
+        if (!(Number(a.initial) > 0)) return fail('Escribe el capital invertido.');
+        if (!(r.rate > 0 && r.rate < 1)) return fail('Escribe el interés anual, por ejemplo 3,5.');
+        if (!r.end || r.end <= a.start) return fail('La fecha de vencimiento tiene que ser posterior a la de inicio.');
+        if (r.every) {
+          if (!(r.payAmount > 0)) return fail('Escribe cuánto cobras cada vez.');
+          if (!r.payAccountId || !acc(r.payAccountId)) return fail('Elige en qué cuenta te ingresan los intereses.');
+          if (!payDates({ ...a, rentas: r }).length) return fail('Con esas fechas no hay ningún cobro. Revisa el vencimiento o la frecuencia.');
+        }
+      }
+      const rentas = isR ? { rate: a.rentas.rate, end: a.rentas.end, every: a.rentas.every, payAmount: a.rentas.every ? round2(a.rentas.payAmount) : 0, payAccountId: a.rentas.every ? a.rentas.payAccountId : null, paidUntil: existing && existing.rentas ? existing.rentas.paidUntil : null } : null;
       if (existing) {
-        S.accounts = S.accounts.map((x) => x.id === a.id ? { ...x, name: a.name.trim(), type: a.type, block: a.block, initial: accountUsed(a.id) ? x.initial : round2(a.initial || 0), start: accountUsed(a.id) ? x.start : a.start } : x);
-        save(); closeSheet(); render(); toast('Cambios guardados');
+        S.accounts = S.accounts.map((x) => x.id === a.id ? { ...x, name: a.name.trim(), use: a.kind === 'cuenta' ? a.use : undefined, type: a.type, block: a.block,
+          initial: used ? x.initial : round2(a.initial || 0), start: used ? x.start : a.start, rentas } : x);
+        const n = syncRentas(); save(); closeSheet(); render(); toast(n ? `Guardado. Se han apuntado ${n} cobros de intereses` : 'Cambios guardados');
       } else {
         const rec = { id: uid(), kind: a.kind, name: a.name.trim(), type: a.type, block: a.block, initial: round2(a.initial || 0), start: a.start, archived: false, created: Date.now() };
+        if (a.kind === 'cuenta') rec.use = a.use;
+        if (rentas) rec.rentas = rentas;
         S.accounts.push(rec);
-        if (a.kind === 'inversion' && a.currentValue !== '' && isFinite(a.currentValue) && a.currentValue !== rec.initial) S.valuations.push({ id: uid(), accountId: rec.id, date: rec.start, value: round2(a.currentValue), at: Date.now() });
-        save(); closeSheet(); if (UI.tab !== 'cuentas') UI.tab = 'cuentas'; render(); toast(`${rec.name} añadida`);
+        if (a.kind === 'inversion' && !rentas && a.currentValue !== '' && isFinite(a.currentValue) && a.currentValue !== rec.initial) S.valuations.push({ id: uid(), accountId: rec.id, date: rec.start, value: round2(a.currentValue), at: Date.now() });
+        const n = syncRentas(); save(); closeSheet(); if (UI.tab !== 'cuentas') UI.tab = 'cuentas'; render();
+        toast(n ? `${rec.name} añadida. Se han apuntado ${n} cobros que ya recibiste` : `${rec.name} añadida`);
       }
     });
     $('[data-del]', root)?.addEventListener('click', async () => {
-      if (await confirmSheet({ title: 'Eliminar', text: `Se eliminará «${esc(a.name)}».`, ok: 'Eliminar', danger: true })) {
-        S.accounts = S.accounts.filter((x) => x.id !== a.id); save(); render(); toast('Eliminada');
+      const autos = S.txns.filter((t) => t.srcId === a.id).length;
+      if (await confirmSheet({ title: 'Eliminar', text: `Se eliminará «${esc(a.name)}»${autos ? ` y los ${autos} cobros de intereses que la app apuntó` : ''}.`, ok: 'Eliminar', danger: true })) {
+        S.accounts = S.accounts.filter((x) => x.id !== a.id); S.txns = S.txns.filter((t) => t.srcId !== a.id); save(); render(); toast('Eliminada');
       }
     });
     $('[data-archive]', root)?.addEventListener('click', async () => {
       const now = today(); const v = value(existing, now);
       if (!existing.archived && Math.abs(v) > 0.009) {
-        const ok = await confirmSheet({ title: 'Cerrar cuenta', text: `Todavía tiene ${money(v)}. Si la cierras seguirá contando en tu patrimonio. Lo normal es traspasar antes ese dinero a otra cuenta. ¿La cierras igualmente?`, ok: 'Cerrar' });
+        const ok = await confirmSheet({ title: 'Cerrar', text: `Todavía tiene ${money(v)}. Si la cierras seguirá contando en tu patrimonio. Lo normal es traspasar antes ese dinero a otra cuenta. ¿La cierras igualmente?`, ok: 'Cerrar' });
         if (!ok) return;
       }
-      S.accounts = S.accounts.map((x) => x.id === a.id ? { ...x, archived: !x.archived } : x); save(); closeSheet(); render(); toast(existing.archived ? 'Cuenta reabierta' : 'Cuenta cerrada');
+      S.accounts = S.accounts.map((x) => x.id === a.id ? { ...x, archived: !x.archived } : x); save(); closeSheet(); render(); toast(existing.archived ? 'Reabierta' : 'Cerrada');
     });
   };
   openSheet('', (root) => draw(root));
@@ -1042,11 +1200,26 @@ function openAccountDetail(id) {
   const a = acc(id); if (!a) return;
   const now = today();
   const v = value(a, now);
-  const txs = S.txns.filter((t) => t.accountId === id || t.toAccountId === id).sort((x, y) => y.date.localeCompare(x.date) || (y.at || 0) - (x.at || 0));
+  const txs = S.txns.filter((t) => t.accountId === id || t.toAccountId === id || t.srcId === id).sort((x, y) => y.date.localeCompare(x.date) || (y.at || 0) - (x.at || 0));
   const vals = S.valuations.filter((x) => x.accountId === id).sort((x, y) => y.date.localeCompare(x.date));
   const b = BLOCKS.find((x) => x.id === a.block);
   let invHTML = '';
-  if (isInv(a)) {
+  if (isRenta(a)) {
+    const info = rentasInfo(a, now), r = a.rentas;
+    const freq = FREQS.find((f) => f.every === r.every);
+    invHTML = `<div class="tiles" style="grid-template-columns:1fr 1fr;margin-top:12px">
+      <div class="tile"><div class="tile-label">Capital</div><div class="tile-value num">${money0(a.initial)}</div></div>
+      <div class="tile"><div class="tile-label">Interés anual</div><div class="tile-value num">${pct(r.rate, 2)}</div></div>
+      <div class="tile"><div class="tile-label">Generado hasta hoy</div><div class="tile-value num pos">${money0(info.generated)}</div></div>
+      <div class="tile"><div class="tile-label">Generará en total</div><div class="tile-value num">${money0(info.total)}</div></div></div>
+      <div class="summary-rows num" style="margin-top:12px;font-size:13px">
+        <div><span class="muted">Cobro de intereses</span><span>${freq ? freq.name : ''}${r.every ? ` · ${money(r.payAmount)}` : ''}</span></div>
+        ${r.every ? `<div><span class="muted">Te lo ingresan en</span><span>${esc((acc(r.payAccountId) || {}).name || '—')}</span></div>` : ''}
+        <div><span class="muted">${info.matured ? 'Venció el' : 'Vence el'}</span><span>${shortDate(r.end)}</span></div>
+        ${info.next ? `<div><span class="muted">Próximo cobro</span><span>${shortDate(info.next)} · ${money(info.nextAmount)}</span></div>` : ''}
+      </div>
+      ${info.matured && Math.abs(v) > 0.009 ? `<div class="banner" style="margin-top:12px"><p><b>Ya ha vencido</b>Cuando te devuelvan el dinero, pásalo a una de tus cuentas para que tu patrimonio cuadre.</p></div><button class="btn gold block" data-matured style="margin-top:10px">Pasar ${money0(v)} a una cuenta</button>` : ''}`;
+  } else if (isInv(a)) {
     const inv = book(a, now) ?? a.initial, g = gainTo(a, now);
     invHTML = `<div class="tiles" style="grid-template-columns:1fr 1fr;margin-top:12px">
       <div class="tile"><div class="tile-label">Aportado</div><div class="tile-value num">${money0(inv)}</div></div>
@@ -1056,13 +1229,18 @@ function openAccountDetail(id) {
   }
   openSheet(`<div class="sheet-head"><div><h2>${esc(a.name)}</h2><div class="card-note">${esc(a.type)} · <span class="dot" style="background:${b.hex};display:inline-block;vertical-align:middle"></span> ${b.name}${a.archived ? ' · cerrada' : ''}</div></div>${closeBtn()}</div>
     <section class="card"><div class="tile-label">${isInv(a) ? 'Valor actual' : 'Saldo'}</div><div class="hero-value num" style="font-size:32px;color:var(--ink)">${money(v ?? a.initial)}</div>${invHTML}</section>
-    <div class="btn-row" style="margin:12px 0"><button class="btn ghost small" data-edit>Editar</button><button class="btn ghost small" data-quick="${isInv(a) ? 'aportar' : 'mov'}">${isInv(a) ? 'Aportar' : 'Apuntar aquí'}</button></div>
+    <div class="btn-row" style="margin:12px 0"><button class="btn ghost small" data-edit>Editar</button>${isRenta(a) ? '' : `<button class="btn ghost small" data-quick="${isInv(a) ? 'aportar' : 'mov'}">${isInv(a) ? 'Aportar' : 'Apuntar aquí'}</button>`}</div>
     ${vals.length ? `<div class="eyebrow" style="margin:6px 2px 6px">Valoraciones</div><div class="list" style="margin-bottom:12px">${vals.map((x) => `<div class="list-row"><span class="row-main"><span class="row-title" style="display:block">${shortDate(x.date)}</span></span><span class="row-amount num">${money(x.value)}</span><button class="icon-btn" data-del-val="${x.id}" aria-label="Borrar valoración" style="width:30px;height:30px">${icon('close')}</button></div>`).join('')}</div>` : ''}
     <div class="eyebrow" style="margin:6px 2px 6px">Movimientos</div>
     ${txs.length ? `<div class="list">${txs.slice(0, 40).map(txRow).join('')}</div>${txs.length > 40 ? `<p class="card-note" style="text-align:center">Se muestran los 40 últimos.</p>` : ''}` : `<p class="card-note">Sin movimientos. Saldo inicial de ${money(a.initial)} el ${shortDate(a.start)}.</p>`}`,
   (root) => {
     $('[data-edit]', root).addEventListener('click', () => { closeSheet(); openAccountForm(a); });
-    $('[data-quick]', root).addEventListener('click', (e) => {
+    $('[data-matured]', root)?.addEventListener('click', () => {
+      closeSheet();
+      const to = activeAccounts().find((x) => x.kind === 'cuenta' && x.use === 'liquidez') || activeAccounts().find((x) => x.kind === 'cuenta');
+      openTxForm(null, { type: 'traspaso', accountId: a.id, toAccountId: to ? to.id : null, amount: value(a, today()) });
+    });
+    $('[data-quick]', root)?.addEventListener('click', (e) => {
       closeSheet();
       if (e.currentTarget.dataset.quick === 'aportar') {
         const from = activeAccounts().find((x) => !isInv(x) && x.id !== a.id);
@@ -1227,7 +1405,7 @@ document.addEventListener('click', async (e) => {
     case 'month': { const n = addMonths(UI.month, Number(el.dataset.dir)); if (n <= currentYM()) { UI.month = n; render(); } break; }
     case 'new-tx': openTxForm(); break;
     case 'edit-tx': { const t = S.txns.find((x) => x.id === el.dataset.id); if (t) openTxForm(t); break; }
-    case 'new-account': openAccountForm(null, el.dataset.block ? { block: Number(el.dataset.block) } : {}); break;
+    case 'new-account': openAccountForm(null, { kind: el.dataset.kind, block: el.dataset.block ? Number(el.dataset.block) : undefined }); break;
     case 'account': openAccountDetail(el.dataset.id); break;
     case 'mov-filter': UI.movFilter = el.dataset.f; render(); break;
     case 'earn': UI.earnPeriod = el.dataset.p; render(); break;
@@ -1269,6 +1447,7 @@ document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && sheetRoo
 
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') { UI.hiddenAt = Date.now(); }
+  else if (S.onboarded && syncRentas() && !UI.locked && !sheetRoot.innerHTML) render();
   else if (S.settings.pinHash && UI.hiddenAt && Date.now() - UI.hiddenAt > LOCK_AFTER_MS) { UI.locked = true; closeSheet(); render(); }
 });
 
@@ -1281,7 +1460,9 @@ async function boot() {
   const stored = await loadState();
   S = stored ? normalize(stored) : freshState();
   if (S.settings.pinHash) UI.locked = true;
+  const due = syncRentas();
   render();
+  if (due && !UI.locked) toast(`Se han apuntado ${due} cobros de intereses`);
   try { if (navigator.storage && navigator.storage.persist) await navigator.storage.persist(); } catch (e) {}
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
     try {

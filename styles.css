@@ -367,3 +367,4 @@ select.input { background-image: linear-gradient(45deg, transparent 50%, var(--o
 }
 
 .sticky-save { position: sticky; bottom: calc(-1 * (var(--safe-b) + 20px)); margin: 0 -18px calc(-1 * (var(--safe-b) + 20px)); padding: 12px 18px calc(var(--safe-b) + 20px); background: linear-gradient(to bottom, rgba(245,243,238,0), var(--cream) 14px); z-index: 2; }
+.sub-head { display: flex; justify-content: space-between; font-size: 12px; font-weight: 700; color: var(--ink-2); margin: 2px 4px -6px; }
