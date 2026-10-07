@@ -17,6 +17,8 @@ const GROUPS = [
   { id: 'variables', name: 'Gastos variables' },
   { id: 'disfrutar', name: 'Disfrutar' }
 ];
+// Bolsas: no son gastos del mes. Cada mes se aparta su parte y, cuando se paga, se resta de la bolsa.
+const POT = { id: 'bolsas', name: 'Bolsas' };
 // Bloque 1: cuentas, clasificadas por su uso
 const CUENTA_USES = [
   { id: 'liquidez',  name: 'Liquidez general',      desc: 'El dinero del día a día: nómina, recibos y gastos' },
@@ -157,20 +159,22 @@ function defaultCategories() {
   const i = (name, yieldy) => ({ id: uid(), kind: 'ingreso', name, yield: !!yieldy });
   return [
     g('Alquiler o hipoteca', 'fijos'), g('Comunidad', 'fijos'), g('Coche', 'fijos'), g('Suscripciones', 'fijos'),
-    g('IBI', 'fijos', 'año'), g('Otros impuestos', 'fijos', 'año'), g('Seguro de hogar', 'fijos', 'año'), g('Seguro del coche', 'fijos', 'año'), g('Gimnasio', 'fijos'),
+    g('Gimnasio', 'fijos'),
     g('Comida', 'variables'), g('Gasolina', 'variables'), g('Luz', 'variables'), g('Gas', 'variables'),
     g('Agua', 'variables'), g('Salud', 'variables'),
-    g('Ocio', 'disfrutar'), { ...g('Viajes', 'disfrutar'), system: 'viajes' },
+    g('Ocio', 'disfrutar'),
+    g('IBI', 'bolsas', 'año'), g('Otros impuestos', 'bolsas', 'año'), g('Seguro de hogar', 'bolsas', 'año'), g('Seguro del coche', 'bolsas', 'año'),
+    { ...g('Viajes', 'bolsas'), system: 'viajes' },
     { id: uid(), kind: 'gasto', name: 'Otro', group: 'imprevisto', system: 'otro', budget: 0, freq: 'mes' },
     i('Nómina'), i('Intereses', true), i('Saveback', true), i('Dividendos', true), i('Rentas', true), i('Otros ingresos')
   ];
 }
 function freshState() {
   return {
-    v: 5,
+    v: 6,
     created: today(),
     onboarded: false,
-    settings: { name: '', cushionMonths: 6, pinHash: null, lastBackup: null, backupSnooze: null, installHintHidden: false, lastAccount: {} },
+    settings: { name: '', cushionMonths: 6, pinHash: null, lastBackup: null, backupSnooze: null, installHintHidden: false, lastAccount: {}, pots: {} },
     plan: { income: 0, contrib: { 1: 0, 2: 0, 3: 0, 4: 0 } },
     accounts: [],
     valuations: [],
@@ -183,6 +187,7 @@ function normalize(s) {
   const out = { ...base, ...s };
   out.settings = { ...base.settings, ...(s.settings || {}) };
   out.settings.lastAccount = out.settings.lastAccount || {};
+  out.settings.pots = out.settings.pots && typeof out.settings.pots === 'object' ? out.settings.pots : {};
   out.plan = { ...base.plan, ...(s.plan || {}) };
   out.plan.contrib = { ...base.plan.contrib, ...((s.plan || {}).contrib || {}) };
   for (const k of ['accounts', 'valuations', 'categories', 'txns']) if (!Array.isArray(out[k])) out[k] = base[k];
@@ -213,7 +218,14 @@ function normalize(s) {
       if (at >= 0) out.categories.splice(at + 1, 0, nc); else out.categories.push(nc);
     }
   }
-  out.v = 5;
+  // v6: IBI, impuestos, seguros y viajes pasan a ser bolsas (dejan de ser gastos del mes)
+  if (out.v < 6) {
+    for (const x of out.categories) if (x.kind === 'gasto' && (x.system === 'viajes' || /^(ibi|seguro|otros impuestos)/i.test(x.name))) x.group = 'bolsas';
+    const tv = out.settings.travel, vc = out.categories.find((x) => x.system === 'viajes');
+    if (tv && vc && !out.settings.pots[vc.id]) out.settings.pots[vc.id] = tv;
+  }
+  delete out.settings.travel;
+  out.v = 6;
   return out;
 }
 
@@ -356,13 +368,17 @@ const budgetMonthly = (c) => round2(c.freq === 'año' ? (c.budget || 0) / 12 : (
 function txIn(ym) { const a = monthStart(ym), b = monthEnd(ym); return S.txns.filter((t) => t.date >= a && t.date <= b); }
 function monthSummary(ym) {
   const list = txIn(ym);
-  let income = 0, spend = 0;
+  let income = 0, spend = 0, potPaid = 0;
   const byCat = {};
   for (const t of list) {
     if (t.type === 'ingreso') income += t.amount;
-    if (t.type === 'gasto') { spend += t.amount; byCat[t.categoryId] = (byCat[t.categoryId] || 0) + t.amount; }
+    if (t.type === 'gasto') {
+      byCat[t.categoryId] = (byCat[t.categoryId] || 0) + t.amount;
+      if (isPot(cat(t.categoryId))) potPaid += t.amount; else spend += t.amount;
+    }
   }
-  return { income: round2(income), spend: round2(spend), saved: round2(income - spend), byCat };
+  const pots = potsSetAside(ym, ym);
+  return { income: round2(income), spend: round2(spend), pots, potPaid: round2(potPaid), saved: round2(income - spend - pots), byCat };
 }
 function groupBudget(groupId) { return round2(S.categories.filter((c) => c.kind === 'gasto' && c.group === groupId).reduce((s, c) => s + budgetMonthly(c), 0)); }
 function planTotals() {
@@ -370,7 +386,8 @@ function planTotals() {
   for (const gr of GROUPS) { g[gr.id] = groupBudget(gr.id); spend += g[gr.id]; }
   const contrib = round2([1, 2, 3, 4].reduce((s, b) => s + (Number(S.plan.contrib[b]) || 0), 0));
   const income = Number(S.plan.income) || 0;
-  return { groups: g, spend: round2(spend), contrib, income, margin: round2(income - spend - contrib) };
+  const pots = groupBudget(POT.id);
+  return { groups: g, spend: round2(spend), pots, contrib, income, margin: round2(income - spend - pots - contrib) };
 }
 /** Aportado este mes a cada bloque: traspasos que llegan a una cuenta del bloque */
 function contributedIn(ym) {
@@ -411,34 +428,57 @@ function needsBackup() {
 const isOtro = (c) => !!c && c.system === 'otro';
 const catLabel = (c) => !c ? '' : isOtro(c) ? 'Imprevisto' : c.name;
 const otroCat = () => S.categories.find((x) => x.system === 'otro');
-const travelCat = () => S.categories.find((x) => x.system === 'viajes');
-/* Bolsa de viajes: se suma el presupuesto de Viajes cada mes y se restan sus gastos */
-function syncTravel() {
-  const c = travelCat();
-  if (!c) { if (S.settings.travel) { S.settings.travel = null; save(); } return; }
-  const amt = budgetMonthly(c), cur = currentYM();
-  let t = S.settings.travel;
-  const before = JSON.stringify(t || null);
-  if (!t) {
-    if (amt <= 0) return;
-    const def = activeAccounts().find((a) => a.block === 1 && a.use === 'liquidez') || activeAccounts().find((a) => a.block === 1);
-    t = S.settings.travel = { accountId: def ? def.id : null, start: cur, initial: 0, history: [] };
+const isPot = (c) => !!c && c.kind === 'gasto' && c.group === POT.id;
+const potCats = () => S.categories.filter(isPot);
+function defaultPotAccount() {
+  const used = Object.values(S.settings.pots || {}).map((p) => acc(p.accountId)).find((a) => a && !a.archived);
+  return used || activeAccounts().find((a) => a.block === 1 && a.use === 'liquidez') || activeAccounts().find((a) => a.block === 1) || null;
+}
+/* Bolsas: cada mes se suma su parte (importe al mes, o al año ÷ 12) y se restan los pagos de esa categoría */
+function syncPots() {
+  const pots = S.settings.pots || (S.settings.pots = {});
+  const cur = currentYM(), ids = new Set();
+  let changed = false;
+  for (const c of potCats()) {
+    ids.add(c.id);
+    const amt = budgetMonthly(c);
+    let p = pots[c.id];
+    if (!p) {
+      if (amt <= 0) continue;
+      const def = defaultPotAccount();
+      p = pots[c.id] = { accountId: def ? def.id : null, start: cur, initial: 0, history: [] };
+      changed = true;
+    }
+    const before = JSON.stringify(p);
+    const last = p.history.length ? p.history[p.history.length - 1] : null;
+    // el mes en curso usa siempre el importe actual; los pasados quedan como estaban
+    if (last && last.ym === cur) last.amount = amt;
+    let next = last ? addMonths(last.ym, 1) : p.start;
+    while (next <= cur) { p.history.push({ ym: next, amount: amt }); next = addMonths(next, 1); }
+    if (p.accountId && !acc(p.accountId)) p.accountId = null;
+    if (JSON.stringify(p) !== before) changed = true;
   }
-  let ym = t.history.length ? t.history[t.history.length - 1].ym : null;
-  // el mes en curso usa siempre el presupuesto actual; los pasados quedan como estaban
-  if (ym === cur) t.history[t.history.length - 1].amount = amt;
-  let next = ym ? addMonths(ym, 1) : t.start;
-  while (next <= cur) { t.history.push({ ym: next, amount: amt }); next = addMonths(next, 1); }
-  if (t.accountId && !acc(t.accountId)) t.accountId = null;
-  if (JSON.stringify(t) !== before) save();
+  for (const id of Object.keys(pots)) if (!ids.has(id)) { delete pots[id]; changed = true; }
+  if (changed) save();
 }
-function travelInfo(d = today()) {
-  const c = travelCat(), t = S.settings.travel;
-  if (!c || !t) return null;
-  const added = t.history.filter((h) => h.ym <= ymOf(d)).reduce((s, h) => s + h.amount, 0);
-  const spent = S.txns.filter((x) => x.type === 'gasto' && x.categoryId === c.id && x.date >= monthStart(t.start) && x.date <= d).reduce((s, x) => s + x.amount, 0);
-  return { balance: round2((t.initial || 0) + added - spent), monthly: budgetMonthly(c), account: acc(t.accountId), cat: c, added: round2(added), spent: round2(spent) };
+function potInfo(c, d = today()) {
+  const p = S.settings.pots && S.settings.pots[c.id];
+  if (!p) return null;
+  const added = p.history.filter((h) => h.ym <= ymOf(d)).reduce((s, h) => s + h.amount, 0);
+  const spent = S.txns.filter((x) => x.type === 'gasto' && x.categoryId === c.id && x.date >= monthStart(p.start) && x.date <= d).reduce((s, x) => s + x.amount, 0);
+  return { cat: c, balance: round2((p.initial || 0) + added - spent), monthly: budgetMonthly(c), account: acc(p.accountId), added: round2(added), spent: round2(spent), pot: p };
 }
+function potsInfo(d = today()) {
+  const list = potCats().map((c) => potInfo(c, d)).filter(Boolean);
+  return { list, total: round2(list.reduce((s, x) => s + x.balance, 0)) };
+}
+/** Lo apartado en bolsas entre dos meses (incluidos) */
+function potsSetAside(fromYM, toYM) {
+  let s = 0;
+  for (const c of potCats()) { const p = S.settings.pots && S.settings.pots[c.id]; if (p) for (const h of p.history) if (h.ym >= fromYM && h.ym <= toYM) s += h.amount; }
+  return round2(s);
+}
+function potsInAccount(id, d = today()) { return potsInfo(d).list.filter((x) => x.account && x.account.id === id); }
 function catUsed(id) { return S.txns.some((t) => t.categoryId === id); }
 function accountUsed(id) { return S.txns.some((t) => t.accountId === id || t.toAccountId === id) || S.valuations.some((v) => v.accountId === id); }
 
@@ -568,7 +608,7 @@ function meter(spent, budget, label, small = false) {
 const app = $('#app');
 
 function render() {
-  if (S.onboarded) syncTravel();
+  if (S.onboarded) syncPots();
   if (!S.onboarded) { app.innerHTML = viewWelcome(); bindWelcome(); return; }
   if (UI.locked) { app.innerHTML = viewLock(); bindLock(); return; }
   const views = { inicio: viewHome, movs: viewMovs, stats: viewStats, cuentas: viewAccounts, plan: viewPlan, ajustes: viewSettings };
@@ -576,8 +616,10 @@ function render() {
   app.innerHTML = `<div class="app-shell">${views[UI.tab]()}</div>
     ${showFab ? `<button class="fab" data-act="new-tx" aria-label="Apuntar movimiento">${icon('plus')}</button>` : ''}
     <nav class="tabbar" aria-label="Secciones"><div class="tabbar-inner">
-      ${[['inicio', 'Inicio', 'home'], ['movs', 'Movimientos', 'list'], ['stats', 'Estadísticas', 'pie'], ['cuentas', 'Cuentas', 'wallet'], ['plan', 'Plan', 'plan']]
-        .map(([id, label, ic]) => `<button class="tab" data-act="tab" data-tab="${id}" ${UI.tab === id ? 'aria-current="page"' : ''}>${icon(ic)}<span>${label}</span></button>`).join('')}
+      ${[['inicio', 'Inicio', 'home'], ['plan', 'Plan', 'plan'], ['cuentas', 'Cuentas', 'wallet'], ['movs', 'Movimientos', 'list'], ['stats', 'Estadísticas', 'pie']]
+        .map(([id, label, ic]) => id === 'cuentas'
+          ? `<button class="tab tab-main" data-act="tab" data-tab="${id}" ${UI.tab === id ? 'aria-current="page"' : ''}><span class="tab-ico">${icon(ic)}</span><span>${label}</span></button>`
+          : `<button class="tab" data-act="tab" data-tab="${id}" ${UI.tab === id ? 'aria-current="page"' : ''}>${icon(ic)}<span>${label}</span></button>`).join('')}
     </div></nav>`;
   if (UI.tab === 'inicio') bindLineChart();
   if (UI.tab === 'stats') bindEvoChart();
@@ -652,11 +694,13 @@ function viewHome() {
     ${monthNav()}
 
     <section class="card" aria-label="Resumen del mes">
-      <div class="tiles">
+      <div class="tiles${ms.pots ? ' tiles-4' : ''}">
         <div class="tile"><div class="tile-label">Ingresos</div><div class="tile-value num">${money0(ms.income)}</div></div>
         <div class="tile"><div class="tile-label">Gastos</div><div class="tile-value num">${money0(ms.spend)}</div></div>
+        ${ms.pots ? `<div class="tile"><div class="tile-label">A tus bolsas</div><div class="tile-value num">${money0(ms.pots)}</div></div>` : ''}
         <div class="tile"><div class="tile-label">Ahorro</div><div class="tile-value num ${ms.saved < 0 ? 'neg' : ''}">${money0(ms.saved)}</div></div>
       </div>
+      ${ms.pots ? `<p class="card-note" style="margin:10px 0 0">Ahorro = ingresos − gastos − lo apartado en bolsas.${ms.potPaid ? ` Este mes has pagado ${money(ms.potPaid)} desde tus bolsas.` : ''}</p>` : ''}
     </section>
 
     <section class="card" aria-label="Presupuesto frente a gastado">
@@ -670,10 +714,11 @@ function viewHome() {
       <button class="link-btn" data-act="tab" data-tab="stats" style="margin-top:12px">Ver estadísticas completas →</button>
     </section>
 
-    ${(() => { const ti = travelInfo(); if (!ti) return ''; return `<section class="card" aria-label="Bolsa de viajes">
-      <div class="card-head"><h2 class="card-title">Bolsa de ${esc(ti.cat.name.toLowerCase())}</h2><button class="link-btn" data-act="tab" data-tab="plan">Ajustar</button></div>
-      <div class="earn-value num ${ti.balance < 0 ? 'neg' : ''}" style="margin-top:0">${money(ti.balance)}</div>
-      <div class="card-note">+${money(ti.monthly)} cada mes${ti.account ? ` · guardada en ${esc(ti.account.name)}` : ' · elige en Plan en qué cuenta la guardas'}</div>
+    ${(() => { const pi = potsInfo(); if (!pi.list.length) return ''; return `<section class="card" aria-label="Tus bolsas">
+      <div class="card-head"><h2 class="card-title">Tus bolsas</h2><button class="link-btn" data-act="tab" data-tab="plan">Ajustar</button></div>
+      <div class="earn-value num ${pi.total < 0 ? 'neg' : ''}" style="margin-top:0">${money(pi.total)}</div>
+      <div class="card-note" style="margin-bottom:10px">Apartado en tus cuentas para pagos que no son de cada mes</div>
+      <div class="pot-list">${pi.list.map(potLine).join('')}</div>
     </section>`; })()}
 
     <section class="card" aria-label="Cuánto he ganado">
@@ -697,6 +742,9 @@ function viewHome() {
   </div>`;
 }
 
+function potLine(x) {
+  return `<div class="pot-line"><div><b>${esc(x.cat.name)}</b><small>+${money(x.monthly)} al mes${x.account ? ` · en ${esc(x.account.name)}` : ' · sin cuenta elegida'}</small></div><span class="num ${x.balance < 0 ? 'neg' : ''}">${money(x.balance)}</span></div>`;
+}
 function installBanner() {
   const standalone = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone;
   if (standalone || S.settings.installHintHidden) return '';
@@ -736,7 +784,8 @@ function txRow(t) {
   if (t.type === 'gasto') {
     ico = `<span class="ico out">${icon('down')}</span>`; title = c ? c.name : 'Gasto'; amt = `<span class="row-amount num neg">${money(-t.amount)}</span>`; sub = a ? a.name : '';
     const g = c ? (isOtro(c) ? 'imprevisto' : c.group) : null;
-    if (g) tag = `<span class="tag tag-${g}">${{ fijos: 'Fijo', variables: 'Variable', disfrutar: 'Disfrutar', imprevisto: 'Imprevisto' }[g] || ''}</span>`;
+    if (g) tag = `<span class="tag tag-${g}">${{ fijos: 'Fijo', variables: 'Variable', disfrutar: 'Disfrutar', imprevisto: 'Imprevisto', bolsas: 'Bolsa' }[g] || ''}</span>`;
+    if (isPot(c)) sub += ' · sale de tu bolsa';
   }
   else if (t.type === 'ingreso') { ico = `<span class="ico in">${icon('up')}</span>`; title = c ? c.name : 'Ingreso'; amt = `<span class="row-amount num pos">${money(t.amount, { sign: true })}</span>`; sub = a ? a.name : ''; }
   else if (t.inv) { ico = `<span class="ico tr">${icon('chart')}</span>`; title = 'Inversión'; amt = `<span class="row-amount num">${money(t.amount)}</span>`; sub = `${a ? a.name : '?'} → ${to ? to.name : '?'}`; if (to) tag = `<span class="tag tag-inv">${BLOCKS.find((b) => b.id === to.block).name}</span>`; }
@@ -761,7 +810,7 @@ function statsRange() {
 }
 function spendByCat(from, to) {
   const out = {}; let total = 0;
-  for (const t of S.txns) if (t.type === 'gasto' && t.date >= from && t.date <= to) { out[t.categoryId] = (out[t.categoryId] || 0) + t.amount; total += t.amount; }
+  for (const t of S.txns) if (t.type === 'gasto' && t.date >= from && t.date <= to && !isPot(cat(t.categoryId))) { out[t.categoryId] = (out[t.categoryId] || 0) + t.amount; total += t.amount; }
   return { byCat: out, total: round2(total) };
 }
 function bullet(name, spent, budget, scale) {
@@ -862,6 +911,23 @@ function viewStats() {
       <div class="list">${imprevTx.slice(0, 30).map(txRow).join('')}</div>
     </section>` : ''}
 
+    ${(() => {
+      const fromYM = isYear ? `${UI.statsYear}-${pad(Math.min(R.firstM || 1, 12))}` : UI.month, toYM = isYear ? `${UI.statsYear}-${pad(R.lastM || 12)}` : UI.month;
+      const rows = potCats().map((c) => {
+        const p = S.settings.pots && S.settings.pots[c.id];
+        const put = p ? round2(p.history.filter((h) => h.ym >= fromYM && h.ym <= toYM).reduce((s2, h) => s2 + h.amount, 0)) : 0;
+        const paid = round2(S.txns.filter((t) => t.type === 'gasto' && t.categoryId === c.id && t.date >= R.from && t.date <= R.to).reduce((s2, t) => s2 + t.amount, 0));
+        const info = potInfo(c);
+        return { c, put, paid, info };
+      }).filter((r) => r.put || r.paid || r.info);
+      if (!rows.length) return '';
+      return `<section class="card" aria-label="Bolsas">
+        <div class="card-head"><h2 class="card-title">Bolsas</h2><span class="card-note">No cuentan como gasto</span></div>
+        <p class="card-note" style="margin:-6px 0 10px">Lo que has apartado y lo que has pagado de cada bolsa en este periodo.</p>
+        <div class="pot-list">${rows.map((r) => `<div class="pot-line"><div><b>${esc(r.c.name)}</b><small>Apartado ${money(r.put)} · Pagado ${money(r.paid)}</small></div>${r.info ? `<span class="num ${r.info.balance < 0 ? 'neg' : ''}">${money(r.info.balance)}<small>en la bolsa</small></span>` : ''}</div>`).join('')}</div>
+      </section>`;
+    })()}
+
     <section class="card" aria-label="Evolución del gasto">
       <div class="card-head"><h2 class="card-title">Gasto mes a mes</h2><span class="card-note">${isYear ? UI.statsYear : 'Últimos 6 meses'}</span></div>
       ${evoChart(pts, pt.spend)}
@@ -889,6 +955,13 @@ function viewAccounts() {
       const sub = round2(list.reduce((s, a) => s + (value(a, now) ?? 0), 0));
       blocksHTML += `<div class="sub-head"><span>${u.name}</span><span class="num">${money0(sub)}</span></div><div class="list">${list.map(accountRow).join('')}</div>`;
     }
+    const pi = potsInfo(now);
+    if (pi.list.length) {
+      const b1total = round2(cuentas.reduce((s2, a) => s2 + (value(a, now) ?? 0), 0));
+      blocksHTML += `<div class="pot-summary"><div class="pot-summary-top"><span>De tu dinero del bloque 1, apartado en bolsas</span><b class="num ${pi.total < 0 ? 'neg' : ''}">${money0(pi.total)}</b></div>
+        <div class="pot-chips">${pi.list.map((x) => `<span class="${x.balance < 0 ? 'neg' : ''}">${esc(x.cat.name)} ${money0(x.balance)}</span>`).join('')}</div>
+        <div class="pot-summary-foot">Libre, sin contar bolsas: <b class="num">${money0(round2(b1total - pi.total))}</b></div></div>`;
+    }
     blocksHTML += addBtn(b1);
     for (const b of BLOCKS.slice(1)) {
       const list = active.filter((a) => a.kind === 'inversion' && a.block === b.id);
@@ -908,8 +981,8 @@ function accountRow(a) {
   const v = value(a, now) ?? a.initial;
   let right = `<span class="row-amount num">${money(v)}</span>`;
   let sub = a.kind === 'cuenta' ? useOf(a).name : a.block === 1 ? `${a.type} · ${useOf(a).name}` : a.type;
-  const ti = travelInfo(now);
-  if (ti && ti.account && ti.account.id === a.id) sub += ` · ${money0(ti.balance)} son tu bolsa de ${ti.cat.name.toLowerCase()}`;
+  const inPots = potsInAccount(a.id, now);
+  if (inPots.length) sub += ` · ${money0(round2(inPots.reduce((s2, x) => s2 + x.balance, 0)))} en bolsas`;
   if (isRenta(a)) {
     const info = rentasInfo(a, now);
     sub = `${a.type} · ${pct(a.rentas.rate, 2)} · ${info.matured ? 'vencida' : `vence ${shortDate(a.rentas.end)}`}`;
@@ -932,21 +1005,21 @@ function viewPlan() {
         <div class="plan-input"><input id="plan-income" class="input num" inputmode="decimal" data-plan="income" value="${numInput(S.plan.income)}" placeholder="0,00" style="text-align:left;font-size:18px;font-weight:700"></div>
         <p class="hint">Lo que te entra limpio en la cuenta. Si cobras pagas extra, suma todo el año y divídelo entre 12.</p></div>
     </section>
-    <section class="card" style="padding:12px 16px"><p class="card-note" style="margin:0">En cada gasto elige <b>Al mes</b> o <b>Al año</b>. Para seguros e impuestos, como el IBI, pon lo que pagas al año y la app lo reparte en 12 meses.</p>
+    <section class="card" style="padding:12px 16px"><p class="card-note" style="margin:0">En cada partida elige <b>Al mes</b> o <b>Al año</b>. Si pones lo que pagas al año, la app lo reparte en 12 meses.</p>
     </section>
 
     ${GROUPS.map((g) => `<section class="card">
       <div class="card-head"><h2 class="card-title">${g.name}</h2><span class="card-note num" data-bind="group-${g.id}">${money(groupBudget(g.id))} al mes</span></div>
-      ${S.categories.filter((c) => c.kind === 'gasto' && c.group === g.id).map((c) => `<div class="plan-row">
-        <div class="name">${esc(c.name)}
-          <div class="freq-seg" role="group" aria-label="Importe de ${esc(c.name)}"><button data-act="freq-set" data-id="${c.id}" data-f="mes" aria-pressed="${c.freq !== 'año'}">Al mes</button><button data-act="freq-set" data-id="${c.id}" data-f="año" aria-pressed="${c.freq === 'año'}">Al año</button></div>
-          ${c.freq === 'año' ? `<small class="num" data-bind="mon-${c.id}">${money(budgetMonthly(c))} al mes</small>` : ''}</div>
-        <div class="plan-input"><input class="num" inputmode="decimal" data-cat="${c.id}" value="${numInput(c.budget)}" placeholder="0" aria-label="Presupuesto de ${esc(c.name)}"></div>
-      </div>`).join('')}
+      ${S.categories.filter((c) => c.kind === 'gasto' && c.group === g.id).map(planRow).join('')}
       <button class="link-btn" data-act="new-cat" data-group="${g.id}" style="margin-top:10px">+ Añadir categoría</button>
     </section>`).join('')}
 
-    ${travelCat() ? `<section class="card" id="travel-card">${travelCardHTML()}</section>` : ''}
+    <section class="card" id="pots-card">
+      <div class="card-head"><h2 class="card-title">${POT.name}</h2><span class="card-note num" data-bind="group-${POT.id}">${money(groupBudget(POT.id))} al mes</span></div>
+      <p class="card-note" style="margin:-6px 0 6px">No son gastos del mes. Cada mes se aparta su parte en la cuenta que elijas y, el mes que pagas, se resta de su bolsa.</p>
+      ${potCats().map((c) => `${planRow(c)}<div class="pot-meta" data-bind="pot-${c.id}">${potMetaHTML(c)}</div>`).join('')}
+      <button class="link-btn" data-act="new-cat" data-group="${POT.id}" style="margin-top:10px">+ Añadir bolsa</button>
+    </section>
 
     <section class="card">
       <div class="card-head"><h2 class="card-title">Aportaciones al mes</h2><span class="card-note">Lo que quieres apartar en cada bloque</span></div>
@@ -961,20 +1034,38 @@ function viewPlan() {
     <section class="card" id="cushion">${cushionHTML()}</section>
   </div>`;
 }
-function travelCardHTML() {
-  const c = travelCat(); if (!c) return '';
-  const ti = travelInfo();
-  const t = S.settings.travel;
+function planRow(c) {
+  return `<div class="plan-row">
+        <div class="name">${esc(c.name)}
+          <div class="freq-seg" role="group" aria-label="Importe de ${esc(c.name)}"><button data-act="freq-set" data-id="${c.id}" data-f="mes" aria-pressed="${c.freq !== 'año'}">Al mes</button><button data-act="freq-set" data-id="${c.id}" data-f="año" aria-pressed="${c.freq === 'año'}">Al año</button></div>
+          ${c.freq === 'año' ? `<small class="num" data-bind="mon-${c.id}">${money(budgetMonthly(c))} al mes</small>` : ''}</div>
+        <div class="plan-input"><input class="num" inputmode="decimal" data-cat="${c.id}" value="${numInput(c.budget)}" placeholder="0" aria-label="Importe de ${esc(c.name)}"></div>
+      </div>`;
+}
+function potMetaHTML(c) {
+  const x = potInfo(c);
+  if (!x) return `<span class="muted">Pon cuánto quieres apartar y empezará a llenarse.</span>`;
+  return `<span>Llevas <b class="num ${x.balance < 0 ? 'neg' : ''}">${money(x.balance)}</b>${x.account ? ` · en ${esc(x.account.name)}` : ' · <span class="neg">elige la cuenta</span>'}</span><button class="link-btn" data-act="pot-edit" data-id="${c.id}">Ajustar</button>`;
+}
+function openPotForm(c) {
+  syncPots();
+  const p = S.settings.pots[c.id]; if (!p) return;
   const b1 = activeAccounts().filter((a) => a.block === 1);
-  if (!ti) return `<div class="card-head"><h2 class="card-title">Bolsa de ${esc(c.name.toLowerCase())}</h2></div>
-    <p class="card-note" style="margin:0">Pon arriba cuánto quieres apartar al mes para ${esc(c.name.toLowerCase())} y se irá sumando a una bolsa. Los gastos de ${esc(c.name)} se restarán de ella.</p>`;
-  return `<div class="card-head"><h2 class="card-title">Bolsa de ${esc(c.name.toLowerCase())}</h2><span class="card-note num">+${money(ti.monthly)} al mes</span></div>
-    <div class="earn-value num ${ti.balance < 0 ? 'neg' : ''}" style="margin:0 0 4px">${money(ti.balance)}</div>
-    <p class="card-note" style="margin:0 0 12px">Cada mes se suma lo que tienes puesto en ${esc(c.name)} y cada gasto de ${esc(c.name)} se resta. <span id="travel-warn">${ti.balance < 0 ? 'Ahora mismo has gastado más de lo que has apartado.' : ''}</span></p>
-    <div class="two">
-      <div class="field"><label for="travel-acc">La guardas en</label>${b1.length ? `<select id="travel-acc" class="input" data-travel="account"><option value="">Elige una cuenta</option>${b1.map((a) => `<option value="${a.id}" ${t && a.id === t.accountId ? 'selected' : ''}>${esc(a.name)}</option>`).join('')}</select>` : `<p class="hint">Añade antes una cuenta en el bloque 1.</p>`}</div>
-      <div class="field"><label for="travel-init">Ya tenías apartado</label><input id="travel-init" class="input num" inputmode="decimal" data-travel="initial" value="${numInput(t ? t.initial : 0)}" placeholder="0"></div>
-    </div>`;
+  openSheet(`<div class="sheet-head"><h2>Bolsa de ${esc(c.name)}</h2>${closeBtn()}</div>
+    <form class="form" id="pot-form" novalidate>
+      <div class="field"><label for="p-acc">La guardas en</label>${b1.length ? `<select id="p-acc" class="input"><option value="">Elige una cuenta</option>${b1.map((a) => `<option value="${a.id}" ${a.id === p.accountId ? 'selected' : ''}>${esc(a.name)}</option>`).join('')}</select>` : `<p class="hint">Añade antes una cuenta en el bloque 1.</p>`}
+        <p class="hint">Tu cuenta de gastos o la del colchón, como prefieras. El dinero no se mueve: la app marca que esa parte ya tiene destino.</p></div>
+      <div class="field"><label for="p-init">Ya tenías apartado</label><input id="p-init" class="input num" inputmode="decimal" value="${numInput(p.initial || 0)}" placeholder="0">
+        <p class="hint">Lo que ya tenías guardado para esto antes de empezar con la app.</p></div>
+      <button class="btn block" type="submit">Guardar</button>
+    </form>`, (root) => {
+    $('#pot-form', root).addEventListener('submit', (e) => {
+      e.preventDefault();
+      const sel = $('#p-acc', root); if (sel) p.accountId = sel.value || null;
+      const v = parseAmount($('#p-init', root).value); p.initial = isFinite(v) ? v : 0;
+      save(); closeSheet(); const y = window.scrollY; render(); window.scrollTo(0, y); toast('Bolsa guardada');
+    });
+  });
 }
 function planSummaryHTML() {
   const pt = planTotals();
@@ -982,6 +1073,7 @@ function planSummaryHTML() {
     <div class="summary-rows num">
       <div><span>Ingresos</span><b>${money(pt.income)}</b></div>
       ${GROUPS.map((g) => `<div><span class="muted">${g.name}</span><span>−${money(pt.groups[g.id]).replace('−', '')}</span></div>`).join('')}
+      <div><span class="muted">Bolsas</span><span>−${money(pt.pots).replace('−', '')}</span></div>
       <div><span class="muted">Aportaciones</span><span>−${money(pt.contrib).replace('−', '')}</span></div>
       <div class="total"><span>Margen sin asignar</span><b class="${pt.margin < 0 ? 'neg' : ''}">${money(pt.margin)}</b></div>
     </div>
@@ -1016,6 +1108,7 @@ function viewSettings() {
 
     <div class="eyebrow">Categorías</div>
     ${GROUPS.map((g) => `<div class="list">${S.categories.filter((c) => c.kind === 'gasto' && c.group === g.id).map((c) => catRow(c, g.name)).join('')}</div>`).join('')}
+    ${potCats().length ? `<div class="list">${potCats().map((c) => catRow(c, 'Bolsa · se aparta cada mes')).join('')}</div>` : ''}
     <div class="list"><div class="list-row"><span class="row-main"><span class="row-title" style="display:block">Otro</span><span class="row-sub" style="display:block">Para lo que no estaba previsto. En los resúmenes sale como «Imprevisto»</span></span></div></div>
     <div class="list">${S.categories.filter((c) => c.kind === 'ingreso').map((c) => catRow(c, c.yield ? 'Ingreso · cuenta como ganancia' : 'Ingreso')).join('')}</div>
     <div class="btn-row"><button class="btn ghost small" data-act="new-cat" data-group="variables">+ Categoría de gasto</button><button class="btn ghost small" data-act="new-cat" data-kind="ingreso">+ Categoría de ingreso</button></div>
@@ -1040,7 +1133,7 @@ function viewSettings() {
       <button class="btn danger" data-act="wipe">Borrar todos los datos</button>
     </section>
 
-    <div class="about"><b>Mis Finanzas</b>Jorge Hernán-Gómez Rodríguez · Consultor Financiero Independiente<br>Versión 1.8</div>
+    <div class="about"><b>Mis Finanzas</b>Jorge Hernán-Gómez Rodríguez · Consultor Financiero Independiente<br>Versión 1.9</div>
   </div>
   <input type="file" id="import-file" accept=".json,application/json" hidden>`;
 }
@@ -1221,6 +1314,7 @@ function openTxForm(existing = null, preset = {}) {
     let catHTML = '';
     if (t.type === 'gasto') {
       catHTML = GROUPS.map((g) => `<div class="cat-group-label">${g.name}</div><div class="cat-grid">${S.categories.filter((c) => c.kind === 'gasto' && c.group === g.id).map((c) => `<button type="button" class="cat-btn" data-cat-pick="${c.id}" aria-pressed="${t.categoryId === c.id}">${esc(c.name)}</button>`).join('')}</div>`).join('')
+        + (potCats().length ? `<div class="cat-group-label">Bolsas · se paga de lo apartado</div><div class="cat-grid">${potCats().map((c) => `<button type="button" class="cat-btn" data-cat-pick="${c.id}" aria-pressed="${t.categoryId === c.id}">${esc(c.name)}</button>`).join('')}</div>` : '')
         + (otroCat() ? `<div class="cat-group-label">No previsto</div><div class="cat-grid"><button type="button" class="cat-btn" data-cat-pick="${otroCat().id}" aria-pressed="${t.categoryId === otroCat().id}">Otro</button></div>` : '');
     } else if (t.type === 'ingreso') {
       catHTML = `<div class="cat-grid">${S.categories.filter((c) => c.kind === 'ingreso').map((c) => `<button type="button" class="cat-btn" data-cat-pick="${c.id}" aria-pressed="${t.categoryId === c.id}">${esc(c.name)}</button>`).join('')}</div>`;
@@ -1253,7 +1347,13 @@ function openTxForm(existing = null, preset = {}) {
     const amountEl = $('#tx-amount', root);
     const keep = () => { t.amount = amountEl.value === '' ? '' : (isFinite(parseAmount(amountEl.value)) ? parseAmount(amountEl.value) : t.amount); t.date = $('#tx-date', root).value || today(); t.note = $('#tx-note', root).value; };
     $$('[data-type]', root).forEach((b) => b.addEventListener('click', () => { keep(); if (t.type !== b.dataset.type) { t.type = b.dataset.type; t.categoryId = null; } draw(root); }));
-    $$('[data-cat-pick]', root).forEach((b) => b.addEventListener('click', () => { t.categoryId = b.dataset.catPick; $$('[data-cat-pick]', root).forEach((x) => x.setAttribute('aria-pressed', String(x === b))); }));
+    $$('[data-cat-pick]', root).forEach((b) => b.addEventListener('click', () => {
+      t.categoryId = b.dataset.catPick; $$('[data-cat-pick]', root).forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+      // pago de una bolsa: propone la cuenta donde está guardada
+      const pc = cat(t.categoryId), pp = !t.id && isPot(pc) && S.settings.pots ? S.settings.pots[pc.id] : null;
+      const se = $('select[data-f="accountId"]', root);
+      if (pp && pp.accountId && se && Array.from(se.options).some((o) => o.value === pp.accountId)) { se.value = pp.accountId; t.accountId = pp.accountId; }
+    }));
     $$('select[data-f]', root).forEach((s) => s.addEventListener('change', () => { keep(); t[s.dataset.f] = s.value; draw(root); }));
     $('#tx-date', root).addEventListener('change', () => { keep(); draw(root); });
     $('#tx-form', root).addEventListener('submit', (e) => {
@@ -1566,7 +1666,7 @@ function openCatForm(existing = null, preset = {}) {
   openSheet(`<div class="sheet-head"><h2>${c.id ? 'Editar categoría' : 'Nueva categoría'}</h2>${closeBtn()}</div>
     <form class="form" id="cat-form" novalidate>
       <div class="field"><label for="c-name">Nombre</label><input id="c-name" class="input" value="${esc(c.name)}" maxlength="30" placeholder="Por ejemplo, Mascotas"></div>
-      ${c.kind === 'gasto' ? `<div class="field"><label for="c-group">Grupo</label><select id="c-group" class="input">${GROUPS.map((g) => `<option value="${g.id}" ${g.id === c.group ? 'selected' : ''}>${g.name}</option>`).join('')}</select></div>`
+      ${c.kind === 'gasto' ? `<div class="field"><label for="c-group">Grupo</label><select id="c-group" class="input">${GROUPS.map((g) => `<option value="${g.id}" ${g.id === c.group ? 'selected' : ''}>${g.name}</option>`).join('')}<option value="${POT.id}" ${c.group === POT.id ? 'selected' : ''}>Bolsa (se aparta cada mes)</option></select></div>`
         : `<div class="switch-row"><div><b style="font-size:14px">Cuenta como ganancia</b><div class="card-note">Intereses, saveback, dividendos… Suma en «¿Cuánto he ganado?»</div></div><label class="switch"><input type="checkbox" id="c-yield" ${c.yield ? 'checked' : ''}><span></span></label></div>`}
       <p class="form-error" id="c-err" hidden></p>
       <button class="btn block" type="submit">${c.id ? 'Guardar' : 'Añadir'}</button>
@@ -1585,10 +1685,10 @@ function openCatForm(existing = null, preset = {}) {
       const others = S.categories.filter((x) => x.kind === c.kind && x.id !== c.id);
       if (!others.length) { toast('Necesitas al menos una categoría'); return; }
       const fallback = (c.kind === 'gasto' && otroCat()) || others.find((x) => /^otros/i.test(x.name)) || others[0];
-      const ok = await confirmSheet({ title: 'Eliminar categoría', text: (used ? `Tiene movimientos apuntados. Pasarán a «${esc(catLabel(fallback))}».` : `Se eliminará «${esc(c.name)}».`) + (c.system === 'viajes' ? ' También desaparecerá tu bolsa de viajes.' : ''), ok: 'Eliminar', danger: true });
+      const ok = await confirmSheet({ title: 'Eliminar categoría', text: (used ? `Tiene movimientos apuntados. Pasarán a «${esc(catLabel(fallback))}».` : `Se eliminará «${esc(c.name)}».`) + (isPot(c) ? ' También desaparecerá su bolsa.' : ''), ok: 'Eliminar', danger: true });
       if (!ok) return;
       if (used) S.txns = S.txns.map((t) => t.categoryId === c.id ? { ...t, categoryId: fallback.id } : t);
-      S.categories = S.categories.filter((x) => x.id !== c.id); if (c.system === 'viajes') S.settings.travel = null; save(); render(); toast('Categoría eliminada');
+      S.categories = S.categories.filter((x) => x.id !== c.id); if (S.settings.pots) delete S.settings.pots[c.id]; save(); render(); toast('Categoría eliminada');
     });
   });
 }
@@ -1603,26 +1703,15 @@ function bindPlan() {
     $('#plan-summary').innerHTML = planSummaryHTML();
     $('#cushion').innerHTML = cushionHTML();
     bindCushion();
-    const hadTravel = !!S.settings.travel;
-    syncTravel();
-    const tc = $('#travel-card');
-    if (tc && (!hadTravel || !document.activeElement || !tc.contains(document.activeElement))) { tc.innerHTML = travelCardHTML(); bindTravel(); }
+    { const el = $(`[data-bind="group-${POT.id}"]`); if (el) el.textContent = `${money(groupBudget(POT.id))} al mes`; }
+    syncPots();
+    for (const c of potCats()) { const el = $(`[data-bind="pot-${c.id}"]`); if (el) el.innerHTML = potMetaHTML(c); }
   };
   const val = (el) => { const v = parseAmount(el.value); return isFinite(v) && v >= 0 ? v : 0; };
   $$('[data-plan="income"]').forEach((el) => el.addEventListener('input', () => { S.plan.income = val(el); save(); refresh(); }));
   $$('[data-cat]').forEach((el) => el.addEventListener('input', () => { const c = cat(el.dataset.cat); if (c) { c.budget = val(el); save(); refresh(); } }));
   $$('[data-contrib]').forEach((el) => el.addEventListener('input', () => { S.plan.contrib[el.dataset.contrib] = val(el); save(); refresh(); }));
   bindCushion();
-  bindTravel();
-}
-function bindTravel() {
-  $('[data-travel="account"]')?.addEventListener('change', (e) => { if (S.settings.travel) { S.settings.travel.accountId = e.target.value || null; save(); } });
-  $('[data-travel="initial"]')?.addEventListener('input', (e) => {
-    if (!S.settings.travel) return;
-    const v = parseAmount(e.target.value); S.settings.travel.initial = isFinite(v) ? v : 0; save();
-    const ti = travelInfo(); const el = $('#travel-card .earn-value'); if (el && ti) { el.textContent = money(ti.balance); el.classList.toggle('neg', ti.balance < 0); }
-    const w = $('#travel-warn'); if (w && ti) w.textContent = ti.balance < 0 ? 'Ahora mismo has gastado más de lo que has apartado.' : '';
-  });
 }
 function bindCushion() {
   $('[data-cushion]')?.addEventListener('change', (e) => { S.settings.cushionMonths = Number(e.target.value); save(); $('#cushion').innerHTML = cushionHTML(); bindCushion(); });
@@ -1705,6 +1794,7 @@ document.addEventListener('click', async (e) => {
     case 'toggle-group': UI.openGroups[el.dataset.group] = !UI.openGroups[el.dataset.group]; render(); break;
     case 'freq-set': { const c = cat(el.dataset.id); if (c && c.freq !== el.dataset.f) { c.freq = el.dataset.f; save(); const y = window.scrollY; render(); window.scrollTo(0, y); } break; }
     case 'new-cat': openCatForm(null, { kind: el.dataset.kind || 'gasto', group: el.dataset.group }); break;
+    case 'pot-edit': { const c = cat(el.dataset.id); if (c) openPotForm(c); break; }
     case 'edit-cat': { const c = cat(el.dataset.id); if (c) openCatForm(c); break; }
     case 'export': exportBackup(); break;
     case 'import': pickImport(); break;
@@ -1740,7 +1830,7 @@ document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && sheetRoo
 
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') { UI.hiddenAt = Date.now(); }
-  else if (S.onboarded) { syncTravel(); if (syncRentas() && !UI.locked && !sheetRoot.innerHTML) render(); }
+  else if (S.onboarded) { syncPots(); if (syncRentas() && !UI.locked && !sheetRoot.innerHTML) render(); }
   else if (S.settings.pinHash && UI.hiddenAt && Date.now() - UI.hiddenAt > LOCK_AFTER_MS) { UI.locked = true; closeSheet(); render(); }
 });
 
@@ -1754,7 +1844,7 @@ async function boot() {
   S = stored ? normalize(stored) : freshState();
   if (S.settings.pinHash) UI.locked = true;
   const due = syncRentas();
-  syncTravel();
+  syncPots();
   render();
   if (due && !UI.locked) toast(`Se han apuntado ${due} cobros de intereses`);
   try { if (navigator.storage && navigator.storage.persist) await navigator.storage.persist(); } catch (e) {}
@@ -1774,6 +1864,6 @@ async function boot() {
   }
 }
 // Exponer para pruebas automáticas
-window.__MF = { get state() { return S; }, calc: { netWorth, blockTotals, monthSummary, earned, planTotals, marketValue, book, gainTo, contributedIn, parseAmount, money } };
+window.__MF = { get state() { return S; }, calc: { potsInfo, potInfo, potsSetAside, netWorth, blockTotals, monthSummary, earned, planTotals, marketValue, book, gainTo, contributedIn, parseAmount, money } };
 boot();
 })();
